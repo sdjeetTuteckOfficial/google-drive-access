@@ -192,8 +192,8 @@ function GoogleDriveViewer() {
     }
   };
 
-  // Add file to input
-  const addFileToInput = (file) => {
+  // Add file to input (download binary data)
+  const addFileToInput = async (file) => {
     if (!isDownloadableFile(file.mimeType)) {
       alert(
         `Cannot download ${file.name}. This is a special Google file type (${file.mimeType}) that cannot be exported.`
@@ -202,8 +202,46 @@ function GoogleDriveViewer() {
     }
 
     const exists = selectedFiles.find((f) => f.id === file.id);
-    if (!exists) {
-      setSelectedFiles([...selectedFiles, file]);
+    if (exists) {
+      alert('File already selected');
+      return;
+    }
+
+    try {
+      setUploadStatus(`Downloading ${file.name}...`);
+      const { blob, fileName } = await downloadFile(
+        file.id,
+        file.name,
+        file.mimeType
+      );
+
+      // Create File object
+      const fileObject = new File([blob], fileName, { type: blob.type });
+
+      // Convert blob to base64
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result;
+        const fileData = {
+          id: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          fileName,
+          blob,
+          fileObject,
+          base64,
+          size: file.size,
+          modifiedTime: file.modifiedTime,
+        };
+        setSelectedFiles([...selectedFiles, fileData]);
+        setUploadStatus('');
+        console.log('File object stored:', fileData);
+      };
+      reader.readAsDataURL(blob);
+    } catch (error) {
+      console.error(`Failed to download ${file.name}:`, error);
+      alert(`Failed to download ${file.name}: ${error.message}`);
+      setUploadStatus('');
     }
     // Don't close the picker - allow multiple selections
   };
@@ -224,14 +262,10 @@ function GoogleDriveViewer() {
 
       for (const file of selectedFiles) {
         try {
-          const { blob, fileName } = await downloadFile(
-            file.id,
-            file.name,
-            file.mimeType
-          );
-          const s3Result = await uploadToS3(blob, fileName);
+          // File already has blob from addFileToInput
+          const s3Result = await uploadToS3(file.blob, file.fileName);
           uploadedFiles.push({
-            name: fileName,
+            name: file.fileName,
             s3Url: s3Result.url,
           });
         } catch (error) {
