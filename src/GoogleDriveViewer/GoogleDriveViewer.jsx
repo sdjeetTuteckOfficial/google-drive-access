@@ -9,6 +9,10 @@ function GoogleDriveViewer() {
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [message, setMessage] = useState('');
   const [uploadStatus, setUploadStatus] = useState('');
+  const [currentFolderId, setCurrentFolderId] = useState('root');
+  const [folderStack, setFolderStack] = useState([
+    { id: 'root', name: 'My Drive' },
+  ]);
 
   // Suppress COOP warning
   useEffect(() => {
@@ -28,7 +32,7 @@ function GoogleDriveViewer() {
     onSuccess: (tokenResponse) => {
       console.log('Login Success');
       setToken(tokenResponse.access_token);
-      listFiles(tokenResponse.access_token);
+      listFiles(tokenResponse.access_token, 'root');
     },
     onError: (error) => {
       console.error('Login Failed:', error);
@@ -52,19 +56,26 @@ function GoogleDriveViewer() {
     );
   };
 
+  // Check if item is a folder
+  const isFolder = (mimeType) => {
+    return mimeType === 'application/vnd.google-apps.folder';
+  };
+
   // List Files using REST API
-  const listFiles = async (accessToken = token) => {
+  const listFiles = async (accessToken = token, folderId = currentFolderId) => {
     if (!accessToken) return;
 
     setIsLoading(true);
     try {
+      const query = `'${folderId}' in parents and trashed=false`;
       const response = await fetch(
         'https://www.googleapis.com/drive/v3/files?' +
           new URLSearchParams({
             pageSize: '50',
             fields:
               'nextPageToken, files(id, name, mimeType, webViewLink, iconLink, thumbnailLink, size, modifiedTime)',
-            orderBy: 'modifiedTime desc',
+            orderBy: 'folder,modifiedTime desc',
+            q: query,
           }),
         {
           headers: {
@@ -89,6 +100,33 @@ function GoogleDriveViewer() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Open folder
+  const openFolder = (folderId, folderName) => {
+    setCurrentFolderId(folderId);
+    setFolderStack([...folderStack, { id: folderId, name: folderName }]);
+    listFiles(token, folderId);
+  };
+
+  // Go back to parent folder
+  const goBackFolder = () => {
+    if (folderStack.length > 1) {
+      const newStack = folderStack.slice(0, -1);
+      const parentFolder = newStack[newStack.length - 1];
+      setFolderStack(newStack);
+      setCurrentFolderId(parentFolder.id);
+      listFiles(token, parentFolder.id);
+    }
+  };
+
+  // Go to specific folder in path
+  const goToFolder = (index) => {
+    const newStack = folderStack.slice(0, index + 1);
+    const targetFolder = newStack[newStack.length - 1];
+    setFolderStack(newStack);
+    setCurrentFolderId(targetFolder.id);
+    listFiles(token, targetFolder.id);
   };
 
   // Download file from Google Drive
@@ -134,32 +172,9 @@ function GoogleDriveViewer() {
     }
   };
 
-  // Upload to S3 (mock function - replace with your actual S3 implementation)
+  // Upload to S3 (mock function)
   const uploadToS3 = async (file, fileName) => {
     setUploadStatus(`Uploading ${fileName} to S3...`);
-
-    // REPLACE THIS WITH YOUR ACTUAL S3 UPLOAD LOGIC
-    // Example with AWS SDK:
-    /*
-    const formData = new FormData();
-    formData.append('file', file, fileName);
-    
-    const response = await fetch('YOUR_S3_UPLOAD_ENDPOINT', {
-      method: 'POST',
-      body: formData,
-      headers: {
-        'Authorization': 'YOUR_AUTH_TOKEN',
-      },
-    });
-    
-    if (!response.ok) {
-      throw new Error('S3 upload failed');
-    }
-    
-    return await response.json();
-    */
-
-    // Mock implementation for demo
     return new Promise((resolve) => {
       setTimeout(() => {
         console.log('File would be uploaded to S3:', fileName, file);
@@ -190,7 +205,7 @@ function GoogleDriveViewer() {
     if (!exists) {
       setSelectedFiles([...selectedFiles, file]);
     }
-    setShowFilePicker(false);
+    // Don't close the picker - allow multiple selections
   };
 
   // Remove file from input
@@ -207,7 +222,6 @@ function GoogleDriveViewer() {
 
       const uploadedFiles = [];
 
-      // Download and upload each file to S3
       for (const file of selectedFiles) {
         try {
           const { blob, fileName } = await downloadFile(
@@ -237,7 +251,6 @@ function GoogleDriveViewer() {
         }):\n${uploadedFiles.map((f) => `${f.name} -> ${f.s3Url}`).join('\n')}`
       );
 
-      // Clear after send
       setMessage('');
       setSelectedFiles([]);
       setTimeout(() => setUploadStatus(''), 3000);
@@ -250,7 +263,7 @@ function GoogleDriveViewer() {
 
   // Get file icon
   const getFileIcon = (mimeType) => {
-    if (mimeType.includes('folder')) return '📁';
+    if (isFolder(mimeType)) return '📁';
     if (mimeType.includes('image')) return '🖼️';
     if (mimeType.includes('pdf')) return '📄';
     if (mimeType.includes('sheet') || mimeType.includes('csv')) return '📊';
@@ -410,8 +423,7 @@ function GoogleDriveViewer() {
                   Select from Google Drive
                 </h2>
                 <p className='text-sm text-gray-500 mt-1'>
-                  Click on a file to attach it (special Google files cannot be
-                  downloaded)
+                  Click folders to navigate • Select multiple files to attach
                 </p>
               </div>
               <button
@@ -432,6 +444,23 @@ function GoogleDriveViewer() {
               </button>
             </div>
 
+            {/* Breadcrumb Navigation */}
+            <div className='flex items-center gap-2 px-6 py-4 border-b border-gray-200 bg-gray-50 overflow-x-auto'>
+              {folderStack.map((folder, index) => (
+                <React.Fragment key={folder.id}>
+                  <button
+                    onClick={() => goToFolder(index)}
+                    className='text-sm text-blue-600 hover:text-blue-800 hover:underline whitespace-nowrap'
+                  >
+                    {folder.name}
+                  </button>
+                  {index < folderStack.length - 1 && (
+                    <span className='text-gray-400'>/</span>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+
             {/* Modal Content */}
             <div className='flex-1 overflow-y-auto p-6'>
               {isLoading ? (
@@ -443,50 +472,102 @@ function GoogleDriveViewer() {
                 </div>
               ) : (
                 <div className='grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4'>
-                  {files.map((file) => {
-                    const downloadable = isDownloadableFile(file.mimeType);
-                    return (
-                      <button
-                        key={file.id}
-                        onClick={() => addFileToInput(file)}
-                        className={`text-left border-2 rounded-lg p-4 transition-all duration-200 group ${
-                          downloadable
-                            ? 'border-gray-200 hover:border-blue-500 hover:bg-blue-50'
-                            : 'border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed'
-                        }`}
-                        disabled={!downloadable}
-                      >
-                        <div className='flex items-start gap-3'>
-                          <span className='text-3xl'>
-                            {getFileIcon(file.mimeType)}
-                          </span>
-                          <div className='flex-1 min-w-0'>
-                            <h3
-                              className={`font-medium truncate text-sm ${
-                                downloadable
-                                  ? 'text-gray-800 group-hover:text-blue-600'
-                                  : 'text-gray-500'
-                              }`}
-                              title={file.name}
-                            >
-                              {file.name}
-                            </h3>
-                            <p className='text-xs text-gray-500 mt-1'>
-                              {formatFileSize(file.size)}
-                            </p>
-                            {!downloadable && (
-                              <p className='text-xs text-red-500 mt-1'>
-                                Cannot download
+                  {files.length === 0 ? (
+                    <div className='col-span-full text-center py-12'>
+                      <p className='text-gray-500'>This folder is empty</p>
+                    </div>
+                  ) : (
+                    files.map((file) => {
+                      const isDownloadable = isDownloadableFile(file.mimeType);
+                      const isDir = isFolder(file.mimeType);
+                      const isSelected = selectedFiles.find(
+                        (f) => f.id === file.id
+                      );
+
+                      return (
+                        <div
+                          key={file.id}
+                          onClick={() => {
+                            if (isDir) {
+                              openFolder(file.id, file.name);
+                            } else if (isDownloadable) {
+                              addFileToInput(file);
+                            }
+                          }}
+                          className={`text-left border-2 rounded-lg p-4 transition-all duration-200 group ${
+                            isDir
+                              ? 'border-blue-300 hover:border-blue-500 hover:bg-blue-50 cursor-pointer'
+                              : isDownloadable
+                              ? isSelected
+                                ? 'border-green-500 bg-green-50 cursor-pointer'
+                                : 'border-gray-200 hover:border-blue-500 hover:bg-blue-50 cursor-pointer'
+                              : 'border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed'
+                          }`}
+                        >
+                          <div className='flex items-start gap-3'>
+                            <span className='text-3xl'>
+                              {getFileIcon(file.mimeType)}
+                            </span>
+                            <div className='flex-1 min-w-0'>
+                              <h3
+                                className={`font-medium truncate text-sm ${
+                                  isDir
+                                    ? 'text-blue-600 group-hover:text-blue-700'
+                                    : isDownloadable
+                                    ? isSelected
+                                      ? 'text-green-700'
+                                      : 'text-gray-800 group-hover:text-blue-600'
+                                    : 'text-gray-500'
+                                }`}
+                                title={file.name}
+                              >
+                                {file.name}
+                                {isSelected && isDownloadable && (
+                                  <span className='ml-2 text-green-600'>✓</span>
+                                )}
+                              </h3>
+                              <p className='text-xs text-gray-500 mt-1'>
+                                {isDir ? 'Folder' : formatFileSize(file.size)}
                               </p>
-                            )}
+                              {!isDownloadable && !isDir && (
+                                <p className='text-xs text-red-500 mt-1'>
+                                  Cannot download
+                                </p>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </button>
-                    );
-                  })}
+                      );
+                    })
+                  )}
                 </div>
               )}
             </div>
+
+            {/* Modal Footer with Back Button */}
+            {folderStack.length > 1 && (
+              <div className='flex items-center justify-between p-4 border-t border-gray-200 bg-gray-50'>
+                <button
+                  onClick={goBackFolder}
+                  className='flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition'
+                >
+                  <svg
+                    className='w-5 h-5'
+                    fill='none'
+                    stroke='currentColor'
+                    viewBox='0 0 24 24'
+                  >
+                    <path
+                      strokeLinecap='round'
+                      strokeLinejoin='round'
+                      strokeWidth={2}
+                      d='M15 19l-7-7 7-7'
+                    />
+                  </svg>
+                  Go Back
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
