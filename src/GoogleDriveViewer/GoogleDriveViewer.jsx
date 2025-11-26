@@ -13,6 +13,8 @@ function GoogleDriveViewer() {
   const [folderStack, setFolderStack] = useState([
     { id: 'root', name: 'My Drive' },
   ]);
+  const [checkedFiles, setCheckedFiles] = useState(new Set());
+  const [uniqueFileKey, setUniqueFileKey] = useState(0);
 
   // Suppress COOP warning
   useEffect(() => {
@@ -27,7 +29,7 @@ function GoogleDriveViewer() {
     };
   }, []);
 
-  // Login Hook with redirect flow
+  // Login Hook
   const login = useGoogleLogin({
     onSuccess: (tokenResponse) => {
       console.log('Login Success');
@@ -106,6 +108,8 @@ function GoogleDriveViewer() {
   const openFolder = (folderId, folderName) => {
     setCurrentFolderId(folderId);
     setFolderStack([...folderStack, { id: folderId, name: folderName }]);
+    setCheckedFiles(new Set()); // Clear checked files when navigating
+    setUniqueFileKey((prev) => prev + 1); // Force re-render with new key
     listFiles(token, folderId);
   };
 
@@ -116,6 +120,8 @@ function GoogleDriveViewer() {
       const parentFolder = newStack[newStack.length - 1];
       setFolderStack(newStack);
       setCurrentFolderId(parentFolder.id);
+      setCheckedFiles(new Set()); // Clear checked files when navigating
+      setUniqueFileKey((prev) => prev + 1); // Force re-render with new key
       listFiles(token, parentFolder.id);
     }
   };
@@ -126,17 +132,16 @@ function GoogleDriveViewer() {
     const targetFolder = newStack[newStack.length - 1];
     setFolderStack(newStack);
     setCurrentFolderId(targetFolder.id);
+    setCheckedFiles(new Set()); // Clear checked files when navigating
+    setUniqueFileKey((prev) => prev + 1); // Force re-render with new key
     listFiles(token, targetFolder.id);
   };
 
   // Download file from Google Drive
   const downloadFile = async (fileId, fileName, mimeType) => {
     try {
-      setUploadStatus(`Downloading ${fileName}...`);
-
       let downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
 
-      // For Google Workspace files, export them
       if (mimeType.startsWith('application/vnd.google-apps.')) {
         const exportMap = {
           'application/vnd.google-apps.document': 'application/pdf',
@@ -174,7 +179,6 @@ function GoogleDriveViewer() {
 
   // Upload to S3 (mock function)
   const uploadToS3 = async (file, fileName) => {
-    setUploadStatus(`Uploading ${fileName} to S3...`);
     return new Promise((resolve) => {
       setTimeout(() => {
         console.log('File would be uploaded to S3:', fileName, file);
@@ -183,45 +187,55 @@ function GoogleDriveViewer() {
     });
   };
 
-  // Open file picker
-  const openFilePicker = () => {
-    if (!token) {
-      login();
-    } else {
-      setShowFilePicker(true);
-    }
+  // Toggle file checkbox
+  const toggleFileCheck = (fileId) => {
+    setCheckedFiles((prev) => {
+      const newChecked = new Set(prev);
+      if (newChecked.has(fileId)) {
+        newChecked.delete(fileId);
+      } else {
+        if (newChecked.size >= 5) {
+          alert('Maximum 5 files can be selected');
+          return prev;
+        }
+        newChecked.add(fileId);
+      }
+      return newChecked;
+    });
   };
 
-  // Add file to input (download binary data)
-  const addFileToInput = async (file) => {
-    if (!isDownloadableFile(file.mimeType)) {
-      alert(
-        `Cannot download ${file.name}. This is a special Google file type (${file.mimeType}) that cannot be exported.`
-      );
+  // Process selected files
+  const processCheckedFiles = async () => {
+    if (checkedFiles.size === 0) {
+      alert('Please select at least one file');
       return;
     }
 
-    const exists = selectedFiles.find((f) => f.id === file.id);
-    if (exists) {
-      alert('File already selected');
-      return;
-    }
+    const filesToProcess = files.filter(
+      (f) => checkedFiles.has(f.id) && isDownloadableFile(f.mimeType)
+    );
+    setUploadStatus(`Processing ${filesToProcess.length} file(s)...`);
 
-    try {
-      setUploadStatus(`Downloading ${file.name}...`);
-      const { blob, fileName } = await downloadFile(
-        file.id,
-        file.name,
-        file.mimeType
-      );
+    let processedCount = 0;
+    for (const file of filesToProcess) {
+      const exists = selectedFiles.find((f) => f.id === file.id);
+      if (exists) continue;
 
-      // Create File object
-      const fileObject = new File([blob], fileName, { type: blob.type });
+      try {
+        const { blob, fileName } = await downloadFile(
+          file.id,
+          file.name,
+          file.mimeType
+        );
 
-      // Convert blob to base64
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = reader.result;
+        const fileObject = new File([blob], fileName, { type: blob.type });
+
+        const base64 = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.readAsDataURL(blob);
+        });
+
         const fileData = {
           id: file.id,
           name: file.name,
@@ -233,17 +247,26 @@ function GoogleDriveViewer() {
           size: file.size,
           modifiedTime: file.modifiedTime,
         };
-        setSelectedFiles([...selectedFiles, fileData]);
-        setUploadStatus('');
-        console.log('File object stored:', fileData);
-      };
-      reader.readAsDataURL(blob);
-    } catch (error) {
-      console.error(`Failed to download ${file.name}:`, error);
-      alert(`Failed to download ${file.name}: ${error.message}`);
-      setUploadStatus('');
+        setSelectedFiles((prev) => [...prev, fileData]);
+        processedCount++;
+      } catch (error) {
+        console.error(`Failed to download ${file.name}:`, error);
+      }
     }
-    // Don't close the picker - allow multiple selections
+
+    setUploadStatus(`${processedCount} file(s) ready!`);
+    setCheckedFiles(new Set());
+    setShowFilePicker(false);
+    setTimeout(() => setUploadStatus(''), 2000);
+  };
+
+  // Open file picker
+  const openFilePicker = () => {
+    if (!token) {
+      login();
+    } else {
+      setShowFilePicker(true);
+    }
   };
 
   // Remove file from input
@@ -262,7 +285,6 @@ function GoogleDriveViewer() {
 
       for (const file of selectedFiles) {
         try {
-          // File already has blob from addFileToInput
           const s3Result = await uploadToS3(file.blob, file.fileName);
           uploadedFiles.push({
             name: file.fileName,
@@ -305,7 +327,6 @@ function GoogleDriveViewer() {
     if (mimeType.includes('presentation')) return '📽️';
     if (mimeType.includes('video')) return '🎥';
     if (mimeType.includes('audio')) return '🎵';
-    if (mimeType.includes('makersuite')) return '🤖';
     return '📦';
   };
 
@@ -457,7 +478,8 @@ function GoogleDriveViewer() {
                   Select from Google Drive
                 </h2>
                 <p className='text-sm text-gray-500 mt-1'>
-                  Click folders to navigate • Select multiple files to attach
+                  Check files to select • Maximum 5 files • Click folders to
+                  navigate
                 </p>
               </div>
               <button
@@ -505,66 +527,76 @@ function GoogleDriveViewer() {
                   <p className='text-gray-500'>Loading your files...</p>
                 </div>
               ) : (
-                <div className='grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4'>
+                <div className='space-y-2'>
                   {files.length === 0 ? (
-                    <div className='col-span-full text-center py-12'>
+                    <div className='text-center py-12'>
                       <p className='text-gray-500'>This folder is empty</p>
                     </div>
                   ) : (
-                    files.map((file) => {
+                    files.map((file, index) => {
                       const isDownloadable = isDownloadableFile(file.mimeType);
                       const isDir = isFolder(file.mimeType);
-                      const isSelected = selectedFiles.find(
-                        (f) => f.id === file.id
-                      );
+                      const isChecked = checkedFiles.has(file.id);
 
                       return (
                         <div
-                          key={file.id}
-                          onClick={() => {
-                            if (isDir) {
-                              openFolder(file.id, file.name);
-                            } else if (isDownloadable) {
-                              addFileToInput(file);
-                            }
-                          }}
-                          className={`text-left border-2 rounded-lg p-4 transition-all duration-200 group ${
+                          key={`folder-${currentFolderId}-file-${file.id}-${uniqueFileKey}`}
+                          className={`flex items-center gap-3 border-2 rounded-lg p-4 transition-all duration-200 ${
                             isDir
-                              ? 'border-blue-300 hover:border-blue-500 hover:bg-blue-50 cursor-pointer'
+                              ? 'border-blue-300 hover:border-blue-500 hover:bg-blue-50'
                               : isDownloadable
-                              ? isSelected
-                                ? 'border-green-500 bg-green-50 cursor-pointer'
-                                : 'border-gray-200 hover:border-blue-500 hover:bg-blue-50 cursor-pointer'
-                              : 'border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed'
+                              ? isChecked
+                                ? 'border-green-500 bg-green-50'
+                                : 'border-gray-200 hover:border-blue-500 hover:bg-blue-50'
+                              : 'border-gray-100 bg-gray-50 opacity-60'
                           }`}
                         >
-                          <div className='flex items-start gap-3'>
-                            <span className='text-3xl'>
+                          {!isDir && (
+                            <input
+                              type='checkbox'
+                              checked={isChecked}
+                              onChange={() => {
+                                if (isDownloadable) {
+                                  toggleFileCheck(file.id);
+                                }
+                              }}
+                              disabled={!isDownloadable}
+                              className='w-4 h-4 cursor-pointer'
+                            />
+                          )}
+                          <div
+                            onClick={() => {
+                              if (isDir) {
+                                openFolder(file.id, file.name);
+                              }
+                            }}
+                            className={`flex-1 flex items-center gap-3 ${
+                              isDir ? 'cursor-pointer' : ''
+                            }`}
+                          >
+                            <span className='text-2xl'>
                               {getFileIcon(file.mimeType)}
                             </span>
                             <div className='flex-1 min-w-0'>
                               <h3
                                 className={`font-medium truncate text-sm ${
                                   isDir
-                                    ? 'text-blue-600 group-hover:text-blue-700'
+                                    ? 'text-blue-600 hover:text-blue-700'
                                     : isDownloadable
-                                    ? isSelected
+                                    ? isChecked
                                       ? 'text-green-700'
-                                      : 'text-gray-800 group-hover:text-blue-600'
+                                      : 'text-gray-800'
                                     : 'text-gray-500'
                                 }`}
                                 title={file.name}
                               >
                                 {file.name}
-                                {isSelected && isDownloadable && (
-                                  <span className='ml-2 text-green-600'>✓</span>
-                                )}
                               </h3>
-                              <p className='text-xs text-gray-500 mt-1'>
+                              <p className='text-xs text-gray-500 mt-0.5'>
                                 {isDir ? 'Folder' : formatFileSize(file.size)}
                               </p>
                               {!isDownloadable && !isDir && (
-                                <p className='text-xs text-red-500 mt-1'>
+                                <p className='text-xs text-red-500 mt-0.5'>
                                   Cannot download
                                 </p>
                               )}
@@ -578,30 +610,43 @@ function GoogleDriveViewer() {
               )}
             </div>
 
-            {/* Modal Footer with Back Button */}
-            {folderStack.length > 1 && (
-              <div className='flex items-center justify-between p-4 border-t border-gray-200 bg-gray-50'>
-                <button
-                  onClick={goBackFolder}
-                  className='flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition'
-                >
-                  <svg
-                    className='w-5 h-5'
-                    fill='none'
-                    stroke='currentColor'
-                    viewBox='0 0 24 24'
+            {/* Modal Footer */}
+            <div className='flex items-center justify-between p-4 border-t border-gray-200 bg-gray-50'>
+              <div className='flex items-center gap-4'>
+                {folderStack.length > 1 && (
+                  <button
+                    onClick={goBackFolder}
+                    className='flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-200 rounded-lg transition'
                   >
-                    <path
-                      strokeLinecap='round'
-                      strokeLinejoin='round'
-                      strokeWidth={2}
-                      d='M15 19l-7-7 7-7'
-                    />
-                  </svg>
-                  Go Back
-                </button>
+                    <svg
+                      className='w-5 h-5'
+                      fill='none'
+                      stroke='currentColor'
+                      viewBox='0 0 24 24'
+                    >
+                      <path
+                        strokeLinecap='round'
+                        strokeLinejoin='round'
+                        strokeWidth={2}
+                        d='M15 19l-7-7 7-7'
+                      />
+                    </svg>
+                    Go Back
+                  </button>
+                )}
+                <span className='text-sm text-gray-600'>
+                  Selected: {checkedFiles.size}/5
+                </span>
+                {console.log('Selected files', selectedFiles)}
               </div>
-            )}
+              <button
+                onClick={processCheckedFiles}
+                disabled={checkedFiles.size === 0}
+                className='px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed'
+              >
+                Process {checkedFiles.size > 0 ? `(${checkedFiles.size})` : ''}
+              </button>
+            </div>
           </div>
         </div>
       )}
