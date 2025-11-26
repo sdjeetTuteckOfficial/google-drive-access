@@ -105,7 +105,6 @@ function GoogleDriveViewer() {
   const openFolder = (folderId, folderName) => {
     setCurrentFolderId(folderId);
     setFolderStack([...folderStack, { id: folderId, name: folderName }]);
-    setCheckedFiles(new Set());
     setUniqueFileKey((prev) => prev + 1);
     listFiles(token, folderId);
   };
@@ -116,7 +115,6 @@ function GoogleDriveViewer() {
       const parentFolder = newStack[newStack.length - 1];
       setFolderStack(newStack);
       setCurrentFolderId(parentFolder.id);
-      setCheckedFiles(new Set());
       setUniqueFileKey((prev) => prev + 1);
       listFiles(token, parentFolder.id);
     }
@@ -127,7 +125,6 @@ function GoogleDriveViewer() {
     const targetFolder = newStack[newStack.length - 1];
     setFolderStack(newStack);
     setCurrentFolderId(targetFolder.id);
-    setCheckedFiles(new Set());
     setUniqueFileKey((prev) => prev + 1);
     listFiles(token, targetFolder.id);
   };
@@ -305,7 +302,7 @@ function GoogleDriveViewer() {
         {/* Header */}
         <div className='text-center mb-8'>
           <h1 className='text-4xl font-bold text-gray-800 mb-2'>
-            <span className='text-blue-600'>📁</span> Google Drive Test Run
+            <span className='text-blue-600'>📁</span>Google Drive Test
           </h1>
           <p className='text-gray-600'>Attach files from Google Drive</p>
         </div>
@@ -423,7 +420,7 @@ function GoogleDriveViewer() {
                 Processing Files
               </h3>
               <p className='text-gray-600 text-center mb-6'>
-                Processing for file object conversion...
+                File conversion of file object, base 64 test creation...
               </p>
 
               {/* Progress Bar */}
