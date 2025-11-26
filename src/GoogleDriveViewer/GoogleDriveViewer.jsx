@@ -1,14 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useGoogleLogin } from '@react-oauth/google';
+import { CheckCircle, Download, AlertCircle, Loader, X } from 'lucide-react';
 
 function GoogleDriveViewer() {
   const [token, setToken] = useState(null);
   const [files, setFiles] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedFiles, setSelectedFiles] = useState([]);
   const [showFilePicker, setShowFilePicker] = useState(false);
   const [message, setMessage] = useState('');
-  const [uploadStatus, setUploadStatus] = useState('');
   const [currentFolderId, setCurrentFolderId] = useState('root');
   const [folderStack, setFolderStack] = useState([
     { id: 'root', name: 'My Drive' },
@@ -16,7 +15,11 @@ function GoogleDriveViewer() {
   const [checkedFiles, setCheckedFiles] = useState(new Set());
   const [uniqueFileKey, setUniqueFileKey] = useState(0);
 
-  // Suppress COOP warning
+  // Processing state
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processedFiles, setProcessedFiles] = useState([]);
+  const [processingProgress, setProcessingProgress] = useState(0);
+
   useEffect(() => {
     const originalError = console.error;
     console.error = (...args) => {
@@ -29,12 +32,11 @@ function GoogleDriveViewer() {
     };
   }, []);
 
-  // Login Hook
   const login = useGoogleLogin({
-    onSuccess: (tokenResponse) => {
-      console.log('Login Success');
+    onSuccess: async (tokenResponse) => {
       setToken(tokenResponse.access_token);
-      listFiles(tokenResponse.access_token, 'root');
+      await listFiles(tokenResponse.access_token, 'root');
+      setShowFilePicker(true);
     },
     onError: (error) => {
       console.error('Login Failed:', error);
@@ -44,7 +46,6 @@ function GoogleDriveViewer() {
     flow: 'implicit',
   });
 
-  // Check if file is downloadable
   const isDownloadableFile = (mimeType) => {
     const nonDownloadable = [
       'application/vnd.google-makersuite.prompt',
@@ -58,12 +59,10 @@ function GoogleDriveViewer() {
     );
   };
 
-  // Check if item is a folder
   const isFolder = (mimeType) => {
     return mimeType === 'application/vnd.google-apps.folder';
   };
 
-  // List Files using REST API
   const listFiles = async (accessToken = token, folderId = currentFolderId) => {
     if (!accessToken) return;
 
@@ -93,7 +92,6 @@ function GoogleDriveViewer() {
 
       const data = await response.json();
       setFiles(data.files || []);
-      setShowFilePicker(true);
     } catch (err) {
       console.error('Error listing files:', err);
       alert(
@@ -104,40 +102,36 @@ function GoogleDriveViewer() {
     }
   };
 
-  // Open folder
   const openFolder = (folderId, folderName) => {
     setCurrentFolderId(folderId);
     setFolderStack([...folderStack, { id: folderId, name: folderName }]);
-    setCheckedFiles(new Set()); // Clear checked files when navigating
-    setUniqueFileKey((prev) => prev + 1); // Force re-render with new key
+    setCheckedFiles(new Set());
+    setUniqueFileKey((prev) => prev + 1);
     listFiles(token, folderId);
   };
 
-  // Go back to parent folder
   const goBackFolder = () => {
     if (folderStack.length > 1) {
       const newStack = folderStack.slice(0, -1);
       const parentFolder = newStack[newStack.length - 1];
       setFolderStack(newStack);
       setCurrentFolderId(parentFolder.id);
-      setCheckedFiles(new Set()); // Clear checked files when navigating
-      setUniqueFileKey((prev) => prev + 1); // Force re-render with new key
+      setCheckedFiles(new Set());
+      setUniqueFileKey((prev) => prev + 1);
       listFiles(token, parentFolder.id);
     }
   };
 
-  // Go to specific folder in path
   const goToFolder = (index) => {
     const newStack = folderStack.slice(0, index + 1);
     const targetFolder = newStack[newStack.length - 1];
     setFolderStack(newStack);
     setCurrentFolderId(targetFolder.id);
-    setCheckedFiles(new Set()); // Clear checked files when navigating
-    setUniqueFileKey((prev) => prev + 1); // Force re-render with new key
+    setCheckedFiles(new Set());
+    setUniqueFileKey((prev) => prev + 1);
     listFiles(token, targetFolder.id);
   };
 
-  // Download file from Google Drive
   const downloadFile = async (fileId, fileName, mimeType) => {
     try {
       let downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
@@ -177,17 +171,14 @@ function GoogleDriveViewer() {
     }
   };
 
-  // Upload to S3 (mock function)
   const uploadToS3 = async (file, fileName) => {
     return new Promise((resolve) => {
       setTimeout(() => {
-        console.log('File would be uploaded to S3:', fileName, file);
         resolve({ success: true, url: `https://s3.example.com/${fileName}` });
-      }, 1000);
+      }, 800);
     });
   };
 
-  // Toggle file checkbox
   const toggleFileCheck = (fileId) => {
     setCheckedFiles((prev) => {
       const newChecked = new Set(prev);
@@ -204,7 +195,6 @@ function GoogleDriveViewer() {
     });
   };
 
-  // Process selected files
   const processCheckedFiles = async () => {
     if (checkedFiles.size === 0) {
       alert('Please select at least one file');
@@ -214,13 +204,16 @@ function GoogleDriveViewer() {
     const filesToProcess = files.filter(
       (f) => checkedFiles.has(f.id) && isDownloadableFile(f.mimeType)
     );
-    setUploadStatus(`Processing ${filesToProcess.length} file(s)...`);
+
+    setIsProcessing(true);
+    setProcessingProgress(0);
+    setProcessedFiles([]);
+    setShowFilePicker(false);
 
     let processedCount = 0;
-    for (const file of filesToProcess) {
-      const exists = selectedFiles.find((f) => f.id === file.id);
-      if (exists) continue;
+    const newProcessedFiles = [];
 
+    for (const file of filesToProcess) {
       try {
         const { blob, fileName } = await downloadFile(
           file.id,
@@ -229,38 +222,39 @@ function GoogleDriveViewer() {
         );
 
         const fileObject = new File([blob], fileName, { type: blob.type });
+        await uploadToS3(blob, fileName);
 
-        const base64 = await new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.readAsDataURL(blob);
-        });
-
-        const fileData = {
+        newProcessedFiles.push({
           id: file.id,
           name: file.name,
-          mimeType: file.mimeType,
           fileName,
-          blob,
-          fileObject,
-          base64,
+          mimeType: file.mimeType,
           size: file.size,
-          modifiedTime: file.modifiedTime,
-        };
-        setSelectedFiles((prev) => [...prev, fileData]);
+          fileObject,
+          status: 'success',
+        });
+
         processedCount++;
       } catch (error) {
         console.error(`Failed to download ${file.name}:`, error);
+        newProcessedFiles.push({
+          id: file.id,
+          name: file.name,
+          status: 'error',
+          error: error.message,
+        });
       }
+
+      setProcessingProgress(
+        Math.round((processedCount / filesToProcess.length) * 100)
+      );
     }
 
-    setUploadStatus(`${processedCount} file(s) ready!`);
+    setProcessedFiles(newProcessedFiles);
+    setIsProcessing(false);
     setCheckedFiles(new Set());
-    setShowFilePicker(false);
-    setTimeout(() => setUploadStatus(''), 2000);
   };
 
-  // Open file picker
   const openFilePicker = () => {
     if (!token) {
       login();
@@ -269,55 +263,23 @@ function GoogleDriveViewer() {
     }
   };
 
-  // Remove file from input
   const removeFile = (fileId) => {
-    setSelectedFiles(selectedFiles.filter((f) => f.id !== fileId));
+    setProcessedFiles(processedFiles.filter((f) => f.id !== fileId));
   };
 
-  // Handle send with S3 upload
-  const handleSend = async () => {
-    if (!message.trim() && selectedFiles.length === 0) return;
-
-    try {
-      setUploadStatus('Processing files...');
-
-      const uploadedFiles = [];
-
-      for (const file of selectedFiles) {
-        try {
-          const s3Result = await uploadToS3(file.blob, file.fileName);
-          uploadedFiles.push({
-            name: file.fileName,
-            s3Url: s3Result.url,
-          });
-        } catch (error) {
-          console.error(`Failed to process ${file.name}:`, error);
-          alert(`Failed to upload ${file.name}: ${error.message}`);
-        }
-      }
-
-      console.log('Message:', message);
-      console.log('Uploaded Files:', uploadedFiles);
-
-      setUploadStatus('Upload complete!');
-
-      alert(
-        `Message: ${message}\n\nUploaded Files (${
-          uploadedFiles.length
-        }):\n${uploadedFiles.map((f) => `${f.name} -> ${f.s3Url}`).join('\n')}`
-      );
-
-      setMessage('');
-      setSelectedFiles([]);
-      setTimeout(() => setUploadStatus(''), 3000);
-    } catch (error) {
-      console.error('Send error:', error);
-      setUploadStatus('Upload failed!');
-      setTimeout(() => setUploadStatus(''), 3000);
+  const downloadFileObject = (file) => {
+    if (file.fileObject) {
+      const url = URL.createObjectURL(file.fileObject);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = file.fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
     }
   };
 
-  // Get file icon
   const getFileIcon = (mimeType) => {
     if (isFolder(mimeType)) return '📁';
     if (mimeType.includes('image')) return '🖼️';
@@ -330,7 +292,6 @@ function GoogleDriveViewer() {
     return '📦';
   };
 
-  // Format file size
   const formatFileSize = (bytes) => {
     if (!bytes) return 'N/A';
     const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -344,54 +305,49 @@ function GoogleDriveViewer() {
         {/* Header */}
         <div className='text-center mb-8'>
           <h1 className='text-4xl font-bold text-gray-800 mb-2'>
-            <span className='text-blue-600'>📁</span> Drive to S3 Uploader
+            <span className='text-blue-600'>📁</span> Google Drive Test Run
           </h1>
-          <p className='text-gray-600'>
-            Attach files from Google Drive and upload to S3
-          </p>
+          <p className='text-gray-600'>Attach files from Google Drive</p>
         </div>
 
         {/* Main Input Container */}
         <div className='bg-white rounded-2xl shadow-xl p-6'>
-          {/* Upload Status */}
-          {uploadStatus && (
-            <div className='mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-700'>
-              {uploadStatus}
-            </div>
-          )}
-
-          {/* Attached Files Display */}
-          {selectedFiles.length > 0 && (
+          {/* Processed Files Chips */}
+          {processedFiles.length > 0 && (
             <div className='mb-4 flex flex-wrap gap-2'>
-              {selectedFiles.map((file) => (
+              {processedFiles.map((file) => (
                 <div
                   key={file.id}
-                  className='flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 group hover:bg-blue-100 transition'
+                  className={`flex items-center gap-2 rounded-full px-4 py-2 transition ${
+                    file.status === 'success'
+                      ? 'bg-green-50 border border-green-200 hover:bg-green-100'
+                      : 'bg-red-50 border border-red-200 hover:bg-red-100'
+                  }`}
                 >
-                  <span className='text-lg'>{getFileIcon(file.mimeType)}</span>
-                  <div className='flex flex-col min-w-0'>
+                  <span className='text-lg'>
+                    {file.status === 'success'
+                      ? getFileIcon(file.mimeType)
+                      : '⚠️'}
+                  </span>
+                  <div className='flex items-center gap-2 min-w-0'>
                     <span className='text-sm font-medium text-gray-800 truncate max-w-xs'>
                       {file.name}
                     </span>
-                    <span className='text-xs text-gray-500'>
-                      {formatFileSize(file.size)}
-                    </span>
+                    {file.status === 'success' && (
+                      <button
+                        onClick={() => downloadFileObject(file)}
+                        className='flex-shrink-0 p-1 text-green-600 hover:text-green-700 hover:bg-green-200 rounded-full transition'
+                        title='Download file object'
+                      >
+                        <Download className='w-4 h-4' />
+                      </button>
+                    )}
                   </div>
                   <button
                     onClick={() => removeFile(file.id)}
-                    className='ml-2 text-gray-400 hover:text-red-600 transition'
+                    className='flex-shrink-0 p-1 text-gray-400 hover:text-red-600 hover:bg-red-100 rounded-full transition'
                   >
-                    <svg
-                      className='w-4 h-4'
-                      fill='currentColor'
-                      viewBox='0 0 20 20'
-                    >
-                      <path
-                        fillRule='evenodd'
-                        d='M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z'
-                        clipRule='evenodd'
-                      />
-                    </svg>
+                    <X className='w-4 h-4' />
                   </button>
                 </div>
               ))}
@@ -406,7 +362,6 @@ function GoogleDriveViewer() {
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
-                  handleSend();
                 }
               }}
               placeholder='Type your message here...'
@@ -416,7 +371,6 @@ function GoogleDriveViewer() {
 
             {/* Action Buttons */}
             <div className='absolute bottom-3 right-3 flex gap-2'>
-              {/* Drive Attach Button */}
               <button
                 onClick={openFilePicker}
                 className='p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition'
@@ -436,40 +390,70 @@ function GoogleDriveViewer() {
                   />
                 </svg>
               </button>
-
-              {/* Send Button */}
-              <button
-                onClick={handleSend}
-                disabled={!message.trim() && selectedFiles.length === 0}
-                className='p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed'
-                title='Upload to S3 and send'
-              >
-                <svg
-                  className='w-6 h-6'
-                  fill='none'
-                  stroke='currentColor'
-                  viewBox='0 0 24 24'
-                >
-                  <path
-                    strokeLinecap='round'
-                    strokeLinejoin='round'
-                    strokeWidth={2}
-                    d='M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12'
-                  />
-                </svg>
-              </button>
             </div>
           </div>
 
           <p className='text-xs text-gray-500 mt-2'>
-            Press Enter to upload • Shift + Enter for new line
+            Max 5 files • Supported formats: images, documents, spreadsheets,
+            and more
           </p>
         </div>
       </div>
 
+      {/* Processing Modal */}
+      {isProcessing && (
+        <div className='fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50'>
+          <div className='bg-white rounded-2xl shadow-2xl w-full max-w-md p-8'>
+            <div className='flex flex-col items-center justify-center'>
+              <div className='relative w-24 h-24 mb-6'>
+                <div className='absolute inset-0 rounded-full border-4 border-gray-200'></div>
+                <div
+                  className='absolute inset-0 rounded-full border-4 border-blue-600 border-t-transparent transition-transform'
+                  style={{
+                    transform: 'rotate(360deg)',
+                    animation: 'spin 1s linear infinite',
+                  }}
+                ></div>
+                <div className='absolute inset-0 flex items-center justify-center text-3xl'>
+                  ⏳
+                </div>
+              </div>
+
+              <h3 className='text-xl font-bold text-gray-800 mb-2'>
+                Processing Files
+              </h3>
+              <p className='text-gray-600 text-center mb-6'>
+                Processing for file object conversion...
+              </p>
+
+              {/* Progress Bar */}
+              <div className='w-full mb-4'>
+                <div className='h-2 bg-gray-200 rounded-full overflow-hidden'>
+                  <div
+                    className='h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-300'
+                    style={{ width: `${processingProgress}%` }}
+                  ></div>
+                </div>
+              </div>
+
+              <p className='text-sm text-gray-500 text-center'>
+                {processingProgress}% Complete
+              </p>
+            </div>
+
+            <style>{`
+              @keyframes spin {
+                from { transform: rotate(0deg); }
+                to { transform: rotate(360deg); }
+              }
+            `}</style>
+          </div>
+        </div>
+      )}
+
       {/* File Picker Modal */}
       {showFilePicker && (
-        <div className='fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50'>
+        <div className='fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-40'>
           <div className='bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[80vh] flex flex-col'>
             {/* Modal Header */}
             <div className='flex items-center justify-between p-6 border-b border-gray-200'>
@@ -486,17 +470,7 @@ function GoogleDriveViewer() {
                 onClick={() => setShowFilePicker(false)}
                 className='text-gray-400 hover:text-gray-600 transition'
               >
-                <svg
-                  className='w-6 h-6'
-                  fill='currentColor'
-                  viewBox='0 0 20 20'
-                >
-                  <path
-                    fillRule='evenodd'
-                    d='M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z'
-                    clipRule='evenodd'
-                  />
-                </svg>
+                <X className='w-6 h-6' />
               </button>
             </div>
 
@@ -521,9 +495,7 @@ function GoogleDriveViewer() {
             <div className='flex-1 overflow-y-auto p-6'>
               {isLoading ? (
                 <div className='text-center py-12'>
-                  <div className='inline-block animate-spin text-4xl mb-3'>
-                    ⏳
-                  </div>
+                  <Loader className='w-12 h-12 text-blue-600 animate-spin mx-auto mb-3' />
                   <p className='text-gray-500'>Loading your files...</p>
                 </div>
               ) : (
@@ -533,7 +505,7 @@ function GoogleDriveViewer() {
                       <p className='text-gray-500'>This folder is empty</p>
                     </div>
                   ) : (
-                    files.map((file, index) => {
+                    files.map((file) => {
                       const isDownloadable = isDownloadableFile(file.mimeType);
                       const isDir = isFolder(file.mimeType);
                       const isChecked = checkedFiles.has(file.id);
@@ -634,15 +606,14 @@ function GoogleDriveViewer() {
                     Go Back
                   </button>
                 )}
-                <span className='text-sm text-gray-600'>
+                <span className='text-sm text-gray-600 font-medium'>
                   Selected: {checkedFiles.size}/5
                 </span>
-                {console.log('Selected files', selectedFiles)}
               </div>
               <button
                 onClick={processCheckedFiles}
                 disabled={checkedFiles.size === 0}
-                className='px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed'
+                className='px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed font-medium'
               >
                 Process {checkedFiles.size > 0 ? `(${checkedFiles.size})` : ''}
               </button>
