@@ -12,7 +12,7 @@ function GoogleDriveViewer() {
   const [folderStack, setFolderStack] = useState([
     { id: 'root', name: 'My Drive' },
   ]);
-  const [checkedFiles, setCheckedFiles] = useState(new Set());
+  const [checkedFiles, setCheckedFiles] = useState(new Map()); // Map to store {fileId: complete file data}
   const [uniqueFileKey, setUniqueFileKey] = useState(0);
 
   // Processing state
@@ -131,6 +131,7 @@ function GoogleDriveViewer() {
 
   const downloadFile = async (fileId, fileName, mimeType) => {
     try {
+      console.log('downloadFile called for:', fileName, 'ID:', fileId);
       let downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
 
       if (mimeType.startsWith('application/vnd.google-apps.')) {
@@ -150,20 +151,24 @@ function GoogleDriveViewer() {
         }
       }
 
+      console.log('Fetching from URL:', downloadUrl);
       const response = await fetch(downloadUrl, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
       });
 
+      console.log('Response status:', response.status, 'for file:', fileName);
+
       if (!response.ok) {
-        throw new Error(`Download failed: ${response.status}`);
+        throw new Error(`Download failed: ${response.status} for ${fileName}`);
       }
 
       const blob = await response.blob();
+      console.log('Blob received for:', fileName, 'Size:', blob.size);
       return { blob, fileName };
     } catch (error) {
-      console.error('Download error:', error);
+      console.error('Download error for', fileName, ':', error);
       throw error;
     }
   };
@@ -176,30 +181,43 @@ function GoogleDriveViewer() {
     });
   };
 
-  const toggleFileCheck = (fileId) => {
+  const toggleFileCheck = (file) => {
     setCheckedFiles((prev) => {
-      const newChecked = new Set(prev);
-      if (newChecked.has(fileId)) {
-        newChecked.delete(fileId);
+      const newChecked = new Map(prev);
+      if (newChecked.has(file.id)) {
+        newChecked.delete(file.id);
       } else {
         if (newChecked.size >= 5) {
           alert('Maximum 5 files can be selected');
           return prev;
         }
-        newChecked.add(fileId);
+        // Store complete file object
+        newChecked.set(file.id, {
+          id: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          size: file.size,
+          folderId: currentFolderId,
+        });
       }
       return newChecked;
     });
   };
 
   const processCheckedFiles = async () => {
+    console.log(
+      'Checked files before process:',
+      Array.from(checkedFiles.values())
+    );
+
     if (checkedFiles.size === 0) {
       alert('Please select at least one file');
       return;
     }
 
-    const filesToProcess = files.filter(
-      (f) => checkedFiles.has(f.id) && isDownloadableFile(f.mimeType)
+    // Use the stored file data from checkedFiles Map instead of filtering current files
+    const filesToProcess = Array.from(checkedFiles.values()).filter((f) =>
+      isDownloadableFile(f.mimeType)
     );
 
     setIsProcessing(true);
@@ -249,7 +267,7 @@ function GoogleDriveViewer() {
 
     setProcessedFiles(newProcessedFiles);
     setIsProcessing(false);
-    setCheckedFiles(new Set());
+    setCheckedFiles(new Map());
   };
 
   const openFilePicker = () => {
@@ -302,9 +320,11 @@ function GoogleDriveViewer() {
         {/* Header */}
         <div className='text-center mb-8'>
           <h1 className='text-4xl font-bold text-gray-800 mb-2'>
-            <span className='text-blue-600'>📁</span>Google Drive Test
+            <span className='text-blue-600'>📁</span> Drive to S3 Uploader
           </h1>
-          <p className='text-gray-600'>Attach files from Google Drive</p>
+          <p className='text-gray-600'>
+            Attach files from Google Drive and upload to S3
+          </p>
         </div>
 
         {/* Main Input Container */}
@@ -420,7 +440,8 @@ function GoogleDriveViewer() {
                 Processing Files
               </h3>
               <p className='text-gray-600 text-center mb-6'>
-                File conversion of file object, base 64 test creation...
+                Getting files from drive and converting to file object and
+                base64 for test!!!
               </p>
 
               {/* Progress Bar */}
@@ -523,10 +544,10 @@ function GoogleDriveViewer() {
                           {!isDir && (
                             <input
                               type='checkbox'
-                              checked={isChecked}
+                              checked={checkedFiles.has(file.id)}
                               onChange={() => {
                                 if (isDownloadable) {
-                                  toggleFileCheck(file.id);
+                                  toggleFileCheck(file);
                                 }
                               }}
                               disabled={!isDownloadable}
