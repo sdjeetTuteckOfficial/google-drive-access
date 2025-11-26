@@ -320,10 +320,10 @@ function GoogleDriveViewer() {
         {/* Header */}
         <div className='text-center mb-8'>
           <h1 className='text-4xl font-bold text-gray-800 mb-2'>
-            <span className='text-blue-600'>📁</span> Drive to S3 Uploader
+            <span className='text-blue-600'>📁</span>Google Drive Test 🧑‍💻
           </h1>
           <p className='text-gray-600'>
-            Attach files from Google Drive and upload to S3
+            Accessing file from google drive and process
           </p>
         </div>
 
