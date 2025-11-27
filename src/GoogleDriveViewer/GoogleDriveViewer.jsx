@@ -10,8 +10,9 @@ import {
   Image as ImageIcon,
   ChevronRight,
   ArrowLeft,
-  Cloud,
-  CheckCircle2,
+  Paperclip,
+  Send,
+  Download, // Imported Download Icon
   AlertCircle,
 } from 'lucide-react';
 
@@ -46,6 +47,7 @@ function GoogleDriveViewer() {
   const [files, setFiles] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showFilePicker, setShowFilePicker] = useState(false);
+  const [messageText, setMessageText] = useState('');
 
   // Navigation State
   const [currentFolderId, setCurrentFolderId] = useState('root');
@@ -92,7 +94,8 @@ function GoogleDriveViewer() {
     flow: 'implicit',
   });
 
-  // --- API ---
+  // --- API Actions ---
+
   const listFiles = async (accessToken = token, folderId = currentFolderId) => {
     if (!accessToken) return;
     setIsLoading(true);
@@ -137,42 +140,40 @@ function GoogleDriveViewer() {
     }
   };
 
-  // --- Navigation Logic (FIXED) ---
+  // --- REAL DOWNLOAD LOGIC ---
+  const downloadFileFromDrive = async (file) => {
+    let url = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+    let filename = file.name;
 
-  // 1. Go Deeper (Append to stack)
-  const openFolder = (id, name) => {
-    setCurrentFolderId(id);
-    setFolderStack([...folderStack, { id, name }]);
-    listFiles(token, id);
-  };
-
-  // 2. Go Back One Step (Pop from stack)
-  const goBackOneStep = () => {
-    if (folderStack.length > 1) {
-      const newStack = folderStack.slice(0, -1);
-      const parent = newStack[newStack.length - 1];
-      setFolderStack(newStack);
-      setCurrentFolderId(parent.id);
-      listFiles(token, parent.id);
+    // Handle Google Docs Conversion
+    if (file.mimeType.startsWith('application/vnd.google-apps.')) {
+      if (file.mimeType.includes('document')) {
+        url = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/pdf`;
+        filename += '.pdf';
+      } else if (file.mimeType.includes('spreadsheet')) {
+        url = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`;
+        filename += '.xlsx';
+      } else if (file.mimeType.includes('presentation')) {
+        url = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/vnd.openxmlformats-officedocument.presentationml.presentation`;
+        filename += '.pptx';
+      } else {
+        // Fallback or skip
+        throw new Error('Unsupported Google Doc type');
+      }
     }
-  };
 
-  // 3. Jump to Breadcrumb (Slice stack)
-  const handleBreadcrumbClick = (index) => {
-    // If clicking the current folder, do nothing
-    if (index === folderStack.length - 1) return;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
-    // Slice the stack up to the selected index (inclusive)
-    const newStack = folderStack.slice(0, index + 1);
-    const targetFolder = newStack[newStack.length - 1];
+    if (!response.ok) throw new Error('Download failed');
 
-    setFolderStack(newStack);
-    setCurrentFolderId(targetFolder.id);
-    listFiles(token, targetFolder.id);
+    const blob = await response.blob();
+    // Create a real JS File object
+    return new File([blob], filename, { type: blob.type });
   };
 
   // --- Selection Logic ---
-
   const handleFileCheck = (file) => {
     setCheckedFiles((prev) => {
       const newChecked = new Map(prev);
@@ -193,7 +194,6 @@ function GoogleDriveViewer() {
     const isAlreadySelected = folderSelectionStatus.has(folder.id);
 
     if (isAlreadySelected) {
-      // Uncheck Folder
       setFolderSelectionStatus((prev) => {
         const next = new Map(prev);
         next.delete(folder.id);
@@ -209,7 +209,6 @@ function GoogleDriveViewer() {
       return;
     }
 
-    // Check Folder
     setLoadingFolders((prev) => new Set(prev).add(folder.id));
 
     try {
@@ -267,6 +266,7 @@ function GoogleDriveViewer() {
     }
   };
 
+  // --- Processing Logic ---
   const processSelection = async () => {
     setIsProcessing(true);
     setProcessingProgress(0);
@@ -276,99 +276,203 @@ function GoogleDriveViewer() {
     let current = 0;
     const results = [];
 
-    for (const file of checkedFiles.values()) {
-      await new Promise((r) => setTimeout(r, 500));
+    for (const fileMetadata of checkedFiles.values()) {
+      try {
+        // ACTUAL API CALL to get file content
+        const fileObject = await downloadFileFromDrive(fileMetadata);
+
+        results.push({
+          id: fileMetadata.id,
+          name: fileObject.name, // Use name from conversion if changed (e.g. .pdf)
+          mimeType: fileMetadata.mimeType,
+          size: fileObject.size,
+          fileObject: fileObject, // Store the blob/file
+          status: 'success',
+        });
+      } catch (error) {
+        console.error(error);
+        showToast(`Failed to download ${fileMetadata.name}`, 'error');
+      }
+
       current++;
       setProcessingProgress(Math.round((current / total) * 100));
-      results.push({ ...file, status: 'success' });
     }
 
-    setProcessedFiles(results);
+    setProcessedFiles((prev) => [...prev, ...results]);
     setIsProcessing(false);
     setCheckedFiles(new Map());
     setFolderSelectionStatus(new Map());
-    showToast('Import completed', 'success');
+    showToast('Files attached & downloaded successfully', 'success');
+  };
+
+  // --- Client Side Download Handler ---
+  const handleDownloadFile = (fileItem) => {
+    if (!fileItem.fileObject) {
+      showToast('File content missing', 'error');
+      return;
+    }
+
+    // Create a temporary URL for the file blob
+    const url = URL.createObjectURL(fileItem.fileObject);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileItem.name;
+    document.body.appendChild(link);
+    link.click();
+
+    // Cleanup
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const removeAttachedFile = (fileId) => {
+    setProcessedFiles((prev) => prev.filter((f) => f.id !== fileId));
+  };
+
+  // --- Helper for Icons & Nav ---
+  const openFolder = (id, name) => {
+    setCurrentFolderId(id);
+    setFolderStack([...folderStack, { id, name }]);
+    listFiles(token, id);
+  };
+
+  const goBackOneStep = () => {
+    if (folderStack.length > 1) {
+      const newStack = folderStack.slice(0, -1);
+      const parent = newStack[newStack.length - 1];
+      setFolderStack(newStack);
+      setCurrentFolderId(parent.id);
+      listFiles(token, parent.id);
+    }
+  };
+
+  const handleBreadcrumbClick = (index) => {
+    if (index === folderStack.length - 1) return;
+    const newStack = folderStack.slice(0, index + 1);
+    const targetFolder = newStack[newStack.length - 1];
+    setFolderStack(newStack);
+    setCurrentFolderId(targetFolder.id);
+    listFiles(token, targetFolder.id);
   };
 
   const getIcon = (mime) => {
     if (mime.includes('folder'))
-      return <Folder className='w-6 h-6 text-blue-500 fill-blue-50' />;
+      return <Folder className='w-5 h-5 text-blue-500 fill-blue-50' />;
     if (mime.includes('image'))
-      return <ImageIcon className='w-6 h-6 text-purple-600' />;
+      return <ImageIcon className='w-5 h-5 text-purple-600' />;
     if (mime.includes('pdf'))
-      return <FileText className='w-6 h-6 text-red-500' />;
-    return <FileText className='w-6 h-6 text-slate-500' />;
+      return <FileText className='w-5 h-5 text-red-500' />;
+    return <FileText className='w-5 h-5 text-slate-500' />;
   };
 
   return (
-    <div className='min-h-screen bg-slate-100 flex items-center justify-center p-4 font-sans'>
+    <div className='min-h-screen bg-white flex items-center justify-center p-6 font-sans text-slate-900'>
       {toast && <Toast {...toast} onClose={() => setToast(null)} />}
 
-      <div className='w-full max-w-3xl'>
-        <div className='bg-white rounded-3xl shadow-xl overflow-hidden'>
-          <div className='bg-slate-900 p-8 text-white'>
-            <h1 className='text-2xl font-bold flex items-center gap-3'>
-              <Cloud className='text-blue-400' /> Cloud Import
-            </h1>
-          </div>
+      <div className='w-full max-w-2xl'>
+        <h1 className='text-2xl font-bold mb-6 text-slate-800'>New Message</h1>
 
-          <div className='p-8'>
-            {processedFiles.length > 0 && (
-              <div className='mb-6 flex flex-wrap gap-2'>
-                {processedFiles.map((f) => (
+        <div className='bg-white border border-slate-300 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500 transition-all overflow-hidden flex flex-col'>
+          {/* Attached Files Chips */}
+          {processedFiles.length > 0 && (
+            <div className='px-3 pt-3 flex flex-wrap gap-2'>
+              {processedFiles.map((file) => (
+                <div
+                  key={file.id}
+                  className='flex items-center gap-2 bg-slate-100 border border-slate-200 text-slate-700 text-sm py-1.5 pl-2 pr-1.5 rounded-md animate-in fade-in zoom-in-95 group/chip'
+                >
+                  {getIcon(file.mimeType)}
+
                   <span
-                    key={f.id}
-                    className='bg-green-50 text-green-700 px-3 py-1 rounded-full text-sm border border-green-200 flex items-center gap-1'
+                    className='max-w-[150px] truncate font-medium'
+                    title={file.name}
                   >
-                    <CheckCircle2 className='w-3 h-3' /> {f.name}
+                    {file.name}
                   </span>
-                ))}
-              </div>
-            )}
+                  <span className='text-xs text-slate-400'>
+                    ({formatSize(file.size)})
+                  </span>
 
-            <div
-              onClick={() => (!token ? login() : setShowFilePicker(true))}
-              className='border-2 border-dashed border-slate-300 rounded-2xl p-10 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50 hover:border-blue-400 transition-all group'
-            >
-              <div className='bg-blue-50 p-4 rounded-full mb-4 group-hover:scale-110 transition-transform'>
-                <Folder className='w-8 h-8 text-blue-600' />
-              </div>
-              <p className='text-slate-600 font-medium'>Browse Google Drive</p>
-              <p className='text-slate-400 text-xs mt-1'>
-                {processedFiles.length > 0
-                  ? 'Import more files'
-                  : 'Select up to 5 files'}
-              </p>
+                  <div className='flex items-center gap-0.5 border-l border-slate-300 pl-1.5 ml-1'>
+                    {/* Download Button */}
+                    <button
+                      onClick={() => handleDownloadFile(file)}
+                      className='p-1 hover:bg-slate-200 rounded text-slate-500 hover:text-blue-600 transition-colors'
+                      title='Download file'
+                    >
+                      <Download className='w-3.5 h-3.5' />
+                    </button>
+
+                    {/* Remove Button */}
+                    <button
+                      onClick={() => removeAttachedFile(file.id)}
+                      className='p-1 hover:bg-slate-200 rounded text-slate-500 hover:text-red-500 transition-colors'
+                      title='Remove attachment'
+                    >
+                      <X className='w-3.5 h-3.5' />
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
+          )}
+
+          <textarea
+            value={messageText}
+            onChange={(e) => setMessageText(e.target.value)}
+            placeholder='Type a message...'
+            className='w-full p-4 min-h-[120px] outline-none resize-none text-slate-800 placeholder:text-slate-400'
+          />
+
+          <div className='px-3 py-2 bg-slate-50 border-t border-slate-100 flex justify-between items-center'>
+            <button
+              onClick={() => (!token ? login() : setShowFilePicker(true))}
+              className='flex items-center gap-2 text-slate-600 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-lg transition-all font-medium text-sm group'
+            >
+              <div className='bg-slate-200 group-hover:bg-blue-200 p-1.5 rounded-md transition-colors'>
+                <Paperclip className='w-4 h-4' />
+              </div>
+              <span>Attach from Drive</span>
+            </button>
+
+            <button className='bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 font-medium text-sm transition-all shadow-sm'>
+              <span>Send</span>
+              <Send className='w-3.5 h-3.5' />
+            </button>
           </div>
         </div>
+
+        <p className='text-xs text-slate-400 mt-2 text-right'>
+          Supports Google Drive Attachments (Auto-converts Docs)
+        </p>
       </div>
 
-      {/* --- File Picker Modal --- */}
+      {/* --- File Picker Modal (Same as before) --- */}
       {showFilePicker && (
         <div className='fixed inset-0 z-50 flex items-center justify-center p-4'>
           <div
-            className='absolute inset-0 bg-black/40 backdrop-blur-sm'
+            className='absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity'
             onClick={() => setShowFilePicker(false)}
           />
 
-          <div className='bg-white w-full max-w-4xl h-[80vh] rounded-2xl shadow-2xl z-10 flex flex-col overflow-hidden animate-in zoom-in-95 duration-200'>
+          <div className='relative bg-white w-full max-w-4xl h-[80vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200'>
             {/* Header */}
-            <div className='px-6 py-4 border-b flex justify-between items-center bg-white'>
+            <div className='px-6 py-4 border-b flex justify-between items-center bg-white z-10'>
               <div>
-                <h2 className='text-xl font-bold text-slate-800'>
-                  Select Files
+                <h2 className='text-lg font-bold text-slate-800'>
+                  Select files to attach
                 </h2>
-                <div className='text-xs font-medium text-slate-500 mt-0.5'>
+                <div className='text-xs text-slate-500 mt-0.5'>
                   <span
                     className={`${
                       checkedFiles.size === MAX_FILES
-                        ? 'text-red-500'
-                        : 'text-blue-600'
+                        ? 'text-red-500 font-bold'
+                        : 'text-blue-600 font-medium'
                     }`}
                   >
-                    {checkedFiles.size} / {MAX_FILES} selected
-                  </span>
+                    {checkedFiles.size} / {MAX_FILES}
+                  </span>{' '}
+                  files selected
                 </div>
               </div>
               <div className='flex gap-3'>
@@ -381,22 +485,22 @@ function GoogleDriveViewer() {
                 <button
                   onClick={processSelection}
                   disabled={checkedFiles.size === 0}
-                  className='px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-sm font-medium transition shadow-lg shadow-blue-500/30 disabled:shadow-none'
+                  className='px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-sm font-medium transition shadow-md shadow-blue-500/20 disabled:shadow-none'
                 >
-                  Import
+                  Attach & Download
                 </button>
               </div>
             </div>
 
-            {/* Breadcrumbs (FIXED) */}
+            {/* Breadcrumbs */}
             <div className='px-6 py-2 bg-slate-50 border-b flex items-center gap-2 overflow-x-auto no-scrollbar'>
               {folderStack.length > 1 && (
                 <button
                   onClick={goBackOneStep}
-                  className='p-1 hover:bg-slate-200 rounded-full mr-2'
+                  className='p-1.5 hover:bg-slate-200 rounded-md mr-1 text-slate-500'
                   title='Go Back'
                 >
-                  <ArrowLeft className='w-4 h-4 text-slate-600' />
+                  <ArrowLeft className='w-4 h-4' />
                 </button>
               )}
               {folderStack.map((f, i) => (
@@ -405,14 +509,14 @@ function GoogleDriveViewer() {
                   className='flex items-center text-sm whitespace-nowrap'
                 >
                   {i > 0 && (
-                    <ChevronRight className='w-4 h-4 text-slate-400 mx-1' />
+                    <ChevronRight className='w-4 h-4 text-slate-300 mx-1' />
                   )}
                   <span
-                    onClick={() => handleBreadcrumbClick(i)} // Calls Slice, not Append
-                    className={`cursor-pointer transition-colors ${
+                    onClick={() => handleBreadcrumbClick(i)}
+                    className={`cursor-pointer transition-colors px-1.5 py-0.5 rounded ${
                       i === folderStack.length - 1
-                        ? 'font-bold text-slate-900 bg-white px-2 py-0.5 rounded shadow-sm'
-                        : 'text-slate-500 hover:text-blue-600 hover:underline'
+                        ? 'font-semibold text-slate-900 bg-white shadow-sm border border-slate-200'
+                        : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50'
                     }`}
                   >
                     {f.name}
@@ -421,15 +525,15 @@ function GoogleDriveViewer() {
               ))}
             </div>
 
-            {/* List */}
-            <div className='flex-1 overflow-y-auto p-4 bg-slate-50/50'>
+            {/* File List */}
+            <div className='flex-1 overflow-y-auto p-4 bg-slate-50/30'>
               {isLoading ? (
                 <div className='flex flex-col items-center justify-center h-full text-slate-400'>
-                  <Loader2 className='w-8 h-8 animate-spin mb-2' />
+                  <Loader2 className='w-8 h-8 animate-spin mb-2 text-blue-500' />
                   Loading...
                 </div>
               ) : (
-                <div className='space-y-2'>
+                <div className='space-y-1.5'>
                   {files.map((file) => {
                     const isDir =
                       file.mimeType === 'application/vnd.google-apps.folder';
@@ -447,15 +551,14 @@ function GoogleDriveViewer() {
                     return (
                       <div
                         key={file.id}
-                        className={`group flex items-center p-3 bg-white rounded-xl border transition-all hover:shadow-md ${
+                        className={`group flex items-center px-4 py-3 bg-white rounded-lg border transition-all ${
                           isAnySelected
-                            ? 'border-blue-500 bg-blue-50/30'
-                            : 'border-slate-200 hover:border-blue-300'
+                            ? 'border-blue-500 bg-blue-50/20 z-10 relative'
+                            : 'border-slate-200 hover:border-blue-300 hover:shadow-sm'
                         }`}
                       >
-                        {/* Checkbox */}
                         <div
-                          className='mr-4 pl-1'
+                          className='mr-4 flex-shrink-0'
                           onClick={(e) => {
                             e.stopPropagation();
                             if (canSelect) {
@@ -465,17 +568,17 @@ function GoogleDriveViewer() {
                           }}
                         >
                           {isLoadingFolder ? (
-                            <Loader2 className='w-6 h-6 text-blue-600 animate-spin' />
+                            <Loader2 className='w-5 h-5 text-blue-600 animate-spin' />
                           ) : (
                             <div
-                              className={`w-6 h-6 rounded-full border-2 flex items-center justify-center cursor-pointer transition-all duration-200 ${
+                              className={`w-5 h-5 rounded border flex items-center justify-center cursor-pointer transition-all duration-200 ${
                                 isAnySelected
                                   ? 'bg-blue-600 border-blue-600'
                                   : 'border-slate-300 bg-white hover:border-blue-400'
                               }`}
                             >
                               {isDir && folderStatus === 'partial' ? (
-                                <Minus className='w-3.5 h-3.5 text-white' />
+                                <Minus className='w-3 h-3 text-white' />
                               ) : (
                                 isAnySelected && (
                                   <Check className='w-3.5 h-3.5 text-white stroke-[3]' />
@@ -485,20 +588,24 @@ function GoogleDriveViewer() {
                           )}
                         </div>
 
-                        {/* Content */}
                         <div
-                          className={`flex-1 flex items-center gap-3 ${
+                          className={`flex-1 flex items-center gap-3 overflow-hidden ${
                             isDir ? 'cursor-pointer' : ''
                           }`}
                           onClick={() =>
                             isDir && openFolder(file.id, file.name)
                           }
                         >
-                          <div className='p-2 bg-slate-100 rounded-lg text-slate-600'>
+                          <div
+                            className={`p-1.5 rounded-md ${
+                              isAnySelected ? 'bg-white/50' : 'bg-slate-100'
+                            }`}
+                          >
                             {getIcon(file.mimeType)}
                           </div>
-                          <div className='flex-1 min-w-0'>
-                            <p
+
+                          <div className='flex-1 min-w-0 flex flex-col justify-center'>
+                            <span
                               className={`text-sm font-medium truncate ${
                                 isAnySelected
                                   ? 'text-blue-900'
@@ -506,22 +613,25 @@ function GoogleDriveViewer() {
                               }`}
                             >
                               {file.name}
-                            </p>
-                            <p className='text-xs text-slate-400 flex items-center gap-2'>
-                              {isDir
-                                ? folderStatus === 'partial'
-                                  ? 'Partial'
-                                  : 'Folder'
-                                : `${Math.round(file.size / 1024)} KB`}
+                            </span>
+                            <div className='flex items-center gap-2 text-xs text-slate-400'>
+                              <span>
+                                {isDir
+                                  ? folderStatus === 'partial'
+                                    ? 'Partial'
+                                    : 'Folder'
+                                  : formatSize(file.size)}
+                              </span>
                               {!canSelect && !isDir && (
-                                <span className='text-red-400 text-[10px] bg-red-50 px-1 rounded'>
-                                  Unsupported
+                                <span className='text-red-500 bg-red-50 px-1.5 rounded text-[10px] font-medium border border-red-100'>
+                                  Not Supported
                                 </span>
                               )}
-                            </p>
+                            </div>
                           </div>
+
                           {isDir && (
-                            <ChevronRight className='w-5 h-5 text-slate-300 group-hover:text-blue-400' />
+                            <ChevronRight className='w-4 h-4 text-slate-300 group-hover:text-blue-400 transition-colors' />
                           )}
                         </div>
                       </div>
@@ -530,26 +640,43 @@ function GoogleDriveViewer() {
                 </div>
               )}
             </div>
+
+            <div className='px-6 py-2 bg-slate-50 border-t border-slate-100 text-xs text-slate-500 flex justify-between'>
+              <span>Supported: Images, PDF, Video, Audio</span>
+              <span>Max 5 attachments</span>
+            </div>
           </div>
         </div>
       )}
 
       {/* Processing Overlay */}
       {isProcessing && (
-        <div className='fixed inset-0 z-[60] bg-white/90 backdrop-blur-sm flex flex-col items-center justify-center'>
-          <div className='w-64 bg-slate-100 rounded-full h-2 mb-4 overflow-hidden'>
-            <div
-              className='bg-blue-600 h-full transition-all duration-300'
-              style={{ width: `${processingProgress}%` }}
-            />
+        <div className='fixed inset-0 z-[60] bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center'>
+          <div className='bg-white p-6 rounded-2xl shadow-2xl border border-slate-100 flex flex-col items-center w-64'>
+            <Loader2 className='w-8 h-8 text-blue-600 animate-spin mb-3' />
+            <h3 className='font-semibold text-slate-800 mb-2'>
+              Downloading...
+            </h3>
+            <div className='w-full bg-slate-100 rounded-full h-1.5 overflow-hidden'>
+              <div
+                className='bg-blue-600 h-full transition-all duration-300'
+                style={{ width: `${processingProgress}%` }}
+              />
+            </div>
           </div>
-          <p className='text-slate-600 font-medium animate-pulse'>
-            Processing...
-          </p>
         </div>
       )}
     </div>
   );
 }
+
+// Helper for size
+const formatSize = (bytes) => {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
 
 export default GoogleDriveViewer;
