@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   Paperclip,
   List,
+  Download,
 } from 'lucide-react';
 
 // --- Toast Component ---
@@ -52,7 +53,6 @@ const RecursiveTreeItem = ({
   const hasChildren = Object.keys(node.children).length > 0;
   const hasFiles = node.files.length > 0;
 
-  // Virtual Root Handling
   if (node.id === 'root-virtual') {
     return (
       <div className='flex flex-col gap-1'>
@@ -79,12 +79,10 @@ const RecursiveTreeItem = ({
 
   return (
     <div className='select-none text-slate-700 relative'>
-      {/* Folder Row */}
       <div
         className='flex items-center gap-1.5 py-1 px-2 rounded hover:bg-slate-100 cursor-pointer transition-colors'
         onClick={() => setIsExpanded(!isExpanded)}
       >
-        {/* Indent Guide */}
         {level > 0 && (
           <div
             className='absolute left-0 border-l-2 border-dashed border-slate-300 h-full'
@@ -110,13 +108,11 @@ const RecursiveTreeItem = ({
           {node.name}
         </span>
 
-        {/* Badge: Shows count of FILES inside this folder logic */}
         <span className='text-[10px] font-bold text-slate-400'>
           {node.files.length > 0 ? `(${node.files.length} files)` : ''}
         </span>
       </div>
 
-      {/* Children Container */}
       {isExpanded && (
         <div className='relative pl-4 ml-2 border-l border-dashed border-slate-300'>
           {Object.values(node.children).map((childNode) => (
@@ -143,7 +139,6 @@ const RecursiveTreeItem = ({
   );
 };
 
-// Helper for File Rows
 const TreeFileRow = ({ file, onRemoveFile }) => (
   <div className='group/file flex items-center justify-between py-1 px-2 rounded hover:bg-white hover:shadow-sm transition-all ml-1'>
     <div className='flex items-center gap-2 overflow-hidden'>
@@ -189,14 +184,14 @@ function GoogleDriveViewer() {
   const [loadingFolders, setLoadingFolders] = useState(new Set());
   const [toast, setToast] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // Stored Files State (Now contains actual File objects)
   const [processedFiles, setProcessedFiles] = useState([]);
 
   const MAX_FILES = 5;
 
   const showToast = (message, type = 'info') => setToast({ message, type });
 
-  // --- DERIVED STATE FOR LIMITS ---
-  // Calculate how many actual FILES are selected (ignoring folders)
   const currentFileCount = useMemo(() => {
     let count = 0;
     for (const file of checkedFiles.values()) {
@@ -262,7 +257,27 @@ function GoogleDriveViewer() {
     }
   };
 
-  // --- SELECTION LOGIC ---
+  // --- DOWNLOAD HELPER ---
+  const downloadFileFromDrive = async (file) => {
+    let url = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
+    let filename = file.name;
+
+    // Handle Google Docs types by exporting to PDF
+    if (file.mimeType.startsWith('application/vnd.google-apps.')) {
+      url = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/pdf`;
+      filename += '.pdf';
+    }
+
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!response.ok) throw new Error('Download failed');
+
+    const blob = await response.blob();
+    // Create a proper File object
+    return new File([blob], filename, { type: blob.type });
+  };
 
   const handleFileCheck = (file) => {
     setCheckedFiles((prev) => {
@@ -286,14 +301,12 @@ function GoogleDriveViewer() {
   const handleFolderCheck = async (folder) => {
     const isAlreadySelected = folderSelectionStatus.has(folder.id);
 
-    // UNCHECK FOLDER
     if (isAlreadySelected) {
       setFolderSelectionStatus((prev) => {
         const next = new Map(prev);
         next.delete(folder.id);
         return next;
       });
-      // Remove files/subfolders associated with this folder
       setCheckedFiles((prev) => {
         const next = new Map(prev);
         for (const [id, file] of next.entries()) {
@@ -309,18 +322,12 @@ function GoogleDriveViewer() {
       return;
     }
 
-    // CHECK FOLDER
     setLoadingFolders((prev) => new Set(prev).add(folder.id));
     try {
       const contents = await fetchFolderContents(folder.id);
-
-      // LOGIC RESTORED: We grab EVERYTHING (folders + files)
-      // BUT we only count files against the limit
-
       const validItems = contents;
 
       setCheckedFiles((prev) => {
-        // Recalculate count inside setter to be safe
         let currentCount = 0;
         for (const f of prev.values()) {
           if (!f.mimeType.includes('folder')) currentCount++;
@@ -328,9 +335,6 @@ function GoogleDriveViewer() {
 
         const slotsLeft = MAX_FILES - currentCount;
 
-        // If we have 0 slots left, we can't add files,
-        // BUT we can still add empty folders if we wanted to (optional).
-        // For now, let's say if full, we show error.
         if (slotsLeft <= 0) {
           showToast(`Limit reached. Max ${MAX_FILES} files.`, 'error');
           return prev;
@@ -344,7 +348,6 @@ function GoogleDriveViewer() {
           const isFolder = item.mimeType.includes('folder');
 
           if (isFolder) {
-            // Always allow adding folders (they don't count towards limit)
             if (!newMap.has(item.id)) {
               newMap.set(item.id, {
                 ...item,
@@ -352,7 +355,6 @@ function GoogleDriveViewer() {
               });
             }
           } else {
-            // For files, check limit
             if (addedFilesCount < slotsLeft) {
               if (!newMap.has(item.id)) {
                 newMap.set(item.id, {
@@ -373,7 +375,6 @@ function GoogleDriveViewer() {
 
         setFolderSelectionStatus((statusMap) => {
           const next = new Map(statusMap);
-          // Mark selected if we added anything
           if (validItems.length > 0) {
             next.set(folder.id, {
               status: isPartial ? 'partial' : 'all',
@@ -396,23 +397,64 @@ function GoogleDriveViewer() {
     }
   };
 
-  const processSelection = () => {
+  // --- UPDATED PROCESS SELECTION ---
+  const processSelection = async () => {
     setIsProcessing(true);
-    setTimeout(() => {
-      const results = Array.from(checkedFiles.values()).filter(
+    try {
+      // 1. Filter out folders, we only want actual files
+      const filesToDownload = Array.from(checkedFiles.values()).filter(
         (f) => !f.mimeType.includes('folder')
       );
-      setProcessedFiles((prev) => [...prev, ...results]);
-      setIsProcessing(false);
+
+      // 2. Download all files in parallel
+      // We map them to a structure holding the original ID and the new File Object
+      const downloadedFiles = await Promise.all(
+        filesToDownload.map(async (f) => {
+          try {
+            const fileObj = await downloadFileFromDrive(f);
+            return {
+              id: f.id,
+              name: fileObj.name, // Use name from File object (handles pdf renaming)
+              fileObject: fileObj, // The actual JS File object
+              mimeType: f.mimeType,
+            };
+          } catch (error) {
+            console.error('Failed to download', f.name);
+            return null;
+          }
+        })
+      );
+
+      // 3. Filter out any failed downloads
+      const validFiles = downloadedFiles.filter(Boolean);
+
+      setProcessedFiles((prev) => [...prev, ...validFiles]);
       setCheckedFiles(new Map());
       setFolderSelectionStatus(new Map());
       setShowFilePicker(false);
-      showToast('Attached successfully', 'success');
-    }, 1500);
+      showToast(`Attached ${validFiles.length} files successfully`, 'success');
+    } catch (error) {
+      showToast('Error processing files', 'error');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const removeAttachedFile = (fileId) => {
     setProcessedFiles((prev) => prev.filter((f) => f.id !== fileId));
+  };
+
+  // --- CLIENT SIDE DOWNLOAD TRIGGER ---
+  const triggerBrowserDownload = (fileObj) => {
+    if (!fileObj) return;
+    const url = URL.createObjectURL(fileObj);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileObj.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const openFolder = (id, name) => {
@@ -450,7 +492,6 @@ function GoogleDriveViewer() {
     return <FileText className='w-5 h-5 text-slate-500' />;
   };
 
-  // --- TREE BUILDER LOGIC ---
   const selectionTree = useMemo(() => {
     const root = { id: 'root-virtual', name: 'Root', children: {}, files: [] };
 
@@ -458,7 +499,6 @@ function GoogleDriveViewer() {
       let currentNode = root;
       const path = item.pathPath || [];
 
-      // 1. Traverse Path
       path.forEach((folder) => {
         if (folder.id === 'root') return;
         if (!currentNode.children[folder.id]) {
@@ -472,11 +512,9 @@ function GoogleDriveViewer() {
         currentNode = currentNode.children[folder.id];
       });
 
-      // 2. Add Item (Folder node or File)
       const isFolder = item.mimeType.includes('folder');
 
       if (isFolder) {
-        // Explicitly create the folder node if it doesn't exist yet
         if (!currentNode.children[item.id]) {
           currentNode.children[item.id] = {
             id: item.id,
@@ -506,13 +544,28 @@ function GoogleDriveViewer() {
               {processedFiles.map((file) => (
                 <div
                   key={file.id}
-                  className='bg-slate-100 flex items-center gap-2 px-2 py-1 rounded text-xs text-slate-700'
+                  className='bg-slate-100 flex items-center gap-2 px-2 py-1 rounded text-xs text-slate-700 border border-slate-200'
                 >
                   <FileText className='w-3 h-3 text-slate-400' />
-                  <span>{file.name}</span>
+                  <span className='font-medium max-w-[150px] truncate'>
+                    {file.name}
+                  </span>
+
+                  {/* DOWNLOAD BUTTON */}
+                  <button
+                    onClick={() => triggerBrowserDownload(file.fileObject)}
+                    className='text-slate-400 hover:text-blue-600 p-0.5 rounded hover:bg-slate-200 transition-colors'
+                    title='Download'
+                  >
+                    <Download className='w-3 h-3' />
+                  </button>
+
+                  <div className='w-px h-3 bg-slate-300 mx-0.5'></div>
+
                   <button
                     onClick={() => removeAttachedFile(file.id)}
-                    className='text-slate-400 hover:text-red-500'
+                    className='text-slate-400 hover:text-red-500 p-0.5 rounded hover:bg-slate-200 transition-colors'
+                    title='Remove'
                   >
                     <X className='w-3 h-3' />
                   </button>
@@ -759,7 +812,12 @@ function GoogleDriveViewer() {
         <div className='fixed inset-0 z-[60] bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center'>
           <div className='bg-white p-6 rounded-2xl shadow-2xl border border-slate-100 flex flex-col items-center w-64'>
             <Loader2 className='w-8 h-8 text-blue-600 animate-spin mb-3' />
-            <h3 className='font-semibold text-slate-800 mb-2'>Processing...</h3>
+            <h3 className='font-semibold text-slate-800 mb-2'>
+              Downloading Files...
+            </h3>
+            <p className='text-xs text-slate-500'>
+              Please wait while we fetch your files.
+            </p>
           </div>
         </div>
       )}
