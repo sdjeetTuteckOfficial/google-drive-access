@@ -40,14 +40,13 @@ const Toast = ({ message, type, onClose }) => {
   );
 };
 
-// --- Recursive Tree Component (Auto-Expanded) ---
+// --- Recursive Tree Component ---
 const RecursiveTreeItem = ({
   node,
   level = 0,
   onRemoveFile,
   defaultExpanded = true,
 }) => {
-  // State initializes to true to ensure it opens immediately
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
   const hasChildren = Object.keys(node.children).length > 0;
@@ -63,7 +62,7 @@ const RecursiveTreeItem = ({
             node={childNode}
             level={0}
             onRemoveFile={onRemoveFile}
-            defaultExpanded={true} // Explicitly pass true
+            defaultExpanded={true}
           />
         ))}
         {node.files.map((file) => (
@@ -111,9 +110,9 @@ const RecursiveTreeItem = ({
           {node.name}
         </span>
 
-        {/* Count Badge */}
+        {/* Badge: Shows count of FILES inside this folder logic */}
         <span className='text-[10px] font-bold text-slate-400'>
-          ({node.files.length + Object.keys(node.children).length})
+          {node.files.length > 0 ? `(${node.files.length} files)` : ''}
         </span>
       </div>
 
@@ -126,7 +125,7 @@ const RecursiveTreeItem = ({
               node={childNode}
               level={level + 1}
               onRemoveFile={onRemoveFile}
-              defaultExpanded={true} // Ensure children also default to open
+              defaultExpanded={true}
             />
           ))}
 
@@ -148,11 +147,9 @@ const RecursiveTreeItem = ({
 const TreeFileRow = ({ file, onRemoveFile }) => (
   <div className='group/file flex items-center justify-between py-1 px-2 rounded hover:bg-white hover:shadow-sm transition-all ml-1'>
     <div className='flex items-center gap-2 overflow-hidden'>
-      {/* Checkmark Box */}
       <div className='w-3.5 h-3.5 bg-blue-600 rounded-[3px] flex items-center justify-center shrink-0'>
         <Check className='w-2.5 h-2.5 text-white stroke-[3]' />
       </div>
-
       <FileText className='w-3.5 h-3.5 text-slate-400 shrink-0' />
       <span className='text-xs text-slate-600 truncate' title={file.name}>
         {file.name}
@@ -191,14 +188,24 @@ function GoogleDriveViewer() {
   // UI State
   const [loadingFolders, setLoadingFolders] = useState(new Set());
   const [toast, setToast] = useState(null);
-
-  // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
   const [processedFiles, setProcessedFiles] = useState([]);
 
-  const MAX_FILES = 50;
+  const MAX_FILES = 5;
 
   const showToast = (message, type = 'info') => setToast({ message, type });
+
+  // --- DERIVED STATE FOR LIMITS ---
+  // Calculate how many actual FILES are selected (ignoring folders)
+  const currentFileCount = useMemo(() => {
+    let count = 0;
+    for (const file of checkedFiles.values()) {
+      if (!file.mimeType.includes('folder')) {
+        count++;
+      }
+    }
+    return count;
+  }, [checkedFiles]);
 
   const login = useGoogleLogin({
     onSuccess: async (tokenResponse) => {
@@ -263,8 +270,8 @@ function GoogleDriveViewer() {
       if (newChecked.has(file.id)) {
         newChecked.delete(file.id);
       } else {
-        if (newChecked.size >= MAX_FILES) {
-          showToast(`Limit reached. Max ${MAX_FILES} items.`, 'error');
+        if (currentFileCount >= MAX_FILES) {
+          showToast(`Limit reached. Max ${MAX_FILES} files.`, 'error');
           return prev;
         }
         newChecked.set(file.id, {
@@ -286,6 +293,7 @@ function GoogleDriveViewer() {
         next.delete(folder.id);
         return next;
       });
+      // Remove files/subfolders associated with this folder
       setCheckedFiles((prev) => {
         const next = new Map(prev);
         for (const [id, file] of next.entries()) {
@@ -306,44 +314,72 @@ function GoogleDriveViewer() {
     try {
       const contents = await fetchFolderContents(folder.id);
 
+      // LOGIC RESTORED: We grab EVERYTHING (folders + files)
+      // BUT we only count files against the limit
+
       const validItems = contents;
 
-      if (validItems.length === 0) {
-        showToast('Folder is empty', 'info');
-        // Still add it so it shows up in tree (as empty)
-        // return;
-      }
-
       setCheckedFiles((prev) => {
-        const slotsLeft = MAX_FILES - prev.size;
+        // Recalculate count inside setter to be safe
+        let currentCount = 0;
+        for (const f of prev.values()) {
+          if (!f.mimeType.includes('folder')) currentCount++;
+        }
+
+        const slotsLeft = MAX_FILES - currentCount;
+
+        // If we have 0 slots left, we can't add files,
+        // BUT we can still add empty folders if we wanted to (optional).
+        // For now, let's say if full, we show error.
         if (slotsLeft <= 0) {
-          showToast('Selection full.', 'error');
+          showToast(`Limit reached. Max ${MAX_FILES} files.`, 'error');
           return prev;
         }
 
         const newMap = new Map(prev);
-        let addedCount = 0;
+        let addedFilesCount = 0;
         const newPath = [...folderStack, { id: folder.id, name: folder.name }];
 
         for (const item of validItems) {
-          if (addedCount >= slotsLeft) break;
-          if (!newMap.has(item.id)) {
-            newMap.set(item.id, {
-              ...item,
-              pathPath: newPath,
-            });
-            addedCount++;
+          const isFolder = item.mimeType.includes('folder');
+
+          if (isFolder) {
+            // Always allow adding folders (they don't count towards limit)
+            if (!newMap.has(item.id)) {
+              newMap.set(item.id, {
+                ...item,
+                pathPath: newPath,
+              });
+            }
+          } else {
+            // For files, check limit
+            if (addedFilesCount < slotsLeft) {
+              if (!newMap.has(item.id)) {
+                newMap.set(item.id, {
+                  ...item,
+                  pathPath: newPath,
+                });
+                addedFilesCount++;
+              }
+            }
           }
         }
 
-        const isPartial = addedCount < validItems.length;
+        const filesInFolder = validItems.filter(
+          (f) => !f.mimeType.includes('folder')
+        );
+        const isPartial =
+          addedFilesCount < filesInFolder.length && filesInFolder.length > 0;
 
         setFolderSelectionStatus((statusMap) => {
           const next = new Map(statusMap);
-          next.set(folder.id, {
-            status: isPartial ? 'partial' : 'all',
-            name: folder.name,
-          });
+          // Mark selected if we added anything
+          if (validItems.length > 0) {
+            next.set(folder.id, {
+              status: isPartial ? 'partial' : 'all',
+              name: folder.name,
+            });
+          }
           return next;
         });
 
@@ -418,9 +454,9 @@ function GoogleDriveViewer() {
   const selectionTree = useMemo(() => {
     const root = { id: 'root-virtual', name: 'Root', children: {}, files: [] };
 
-    checkedFiles.forEach((file) => {
+    checkedFiles.forEach((item) => {
       let currentNode = root;
-      const path = file.pathPath || [];
+      const path = item.pathPath || [];
 
       // 1. Traverse Path
       path.forEach((folder) => {
@@ -436,20 +472,21 @@ function GoogleDriveViewer() {
         currentNode = currentNode.children[folder.id];
       });
 
-      // 2. Place the Item (Folder or File)
-      const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
+      // 2. Add Item (Folder node or File)
+      const isFolder = item.mimeType.includes('folder');
 
       if (isFolder) {
-        if (!currentNode.children[file.id]) {
-          currentNode.children[file.id] = {
-            id: file.id,
-            name: file.name,
+        // Explicitly create the folder node if it doesn't exist yet
+        if (!currentNode.children[item.id]) {
+          currentNode.children[item.id] = {
+            id: item.id,
+            name: item.name,
             children: {},
             files: [],
           };
         }
       } else {
-        currentNode.files.push(file);
+        currentNode.files.push(item);
       }
     });
 
@@ -521,14 +558,14 @@ function GoogleDriveViewer() {
                 <div className='text-sm text-slate-500 mt-0.5'>
                   <span
                     className={`${
-                      checkedFiles.size >= MAX_FILES
+                      currentFileCount === MAX_FILES
                         ? 'text-red-500 font-bold'
                         : 'text-blue-600 font-medium'
                     }`}
                   >
-                    {checkedFiles.size} / {MAX_FILES}
+                    {currentFileCount} / {MAX_FILES}
                   </span>{' '}
-                  items selected
+                  files selected
                 </div>
               </div>
               <div className='flex gap-3'>
@@ -540,7 +577,7 @@ function GoogleDriveViewer() {
                 </button>
                 <button
                   onClick={processSelection}
-                  disabled={checkedFiles.size === 0}
+                  disabled={currentFileCount === 0}
                   className='px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-sm font-medium shadow-sm transition-all'
                 >
                   Attach Selected
@@ -683,7 +720,7 @@ function GoogleDriveViewer() {
                 </div>
               </div>
 
-              {/* RIGHT: UPDATED SELECTION TREE */}
+              {/* RIGHT: SELECTION TREE */}
               <div className='w-80 bg-slate-50 flex flex-col border-l border-slate-200 shadow-inner'>
                 <div className='p-4 border-b border-slate-200 bg-slate-100/50'>
                   <h3 className='text-xs font-bold text-slate-500 uppercase tracking-wide flex items-center gap-2'>
@@ -707,7 +744,7 @@ function GoogleDriveViewer() {
                           return next;
                         });
                       }}
-                      defaultExpanded={true} // Force Expansion from Root
+                      defaultExpanded={true}
                     />
                   )}
                 </div>
