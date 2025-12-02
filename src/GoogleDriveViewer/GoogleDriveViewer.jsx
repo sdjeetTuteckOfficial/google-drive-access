@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useGoogleLogin } from '@react-oauth/google';
 import {
   Check,
@@ -11,9 +11,7 @@ import {
   ChevronRight,
   ArrowLeft,
   Paperclip,
-  Send,
-  Download, // Imported Download Icon
-  AlertCircle,
+  List,
 } from 'lucide-react';
 
 // --- Toast Component ---
@@ -42,6 +40,137 @@ const Toast = ({ message, type, onClose }) => {
   );
 };
 
+// --- Recursive Tree Component (Auto-Expanded) ---
+const RecursiveTreeItem = ({
+  node,
+  level = 0,
+  onRemoveFile,
+  defaultExpanded = true,
+}) => {
+  // State initializes to true to ensure it opens immediately
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+
+  const hasChildren = Object.keys(node.children).length > 0;
+  const hasFiles = node.files.length > 0;
+
+  // Virtual Root Handling
+  if (node.id === 'root-virtual') {
+    return (
+      <div className='flex flex-col gap-1'>
+        {Object.values(node.children).map((childNode) => (
+          <RecursiveTreeItem
+            key={childNode.id}
+            node={childNode}
+            level={0}
+            onRemoveFile={onRemoveFile}
+            defaultExpanded={true} // Explicitly pass true
+          />
+        ))}
+        {node.files.map((file) => (
+          <TreeFileRow
+            key={file.id}
+            file={file}
+            level={0}
+            onRemoveFile={onRemoveFile}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className='select-none text-slate-700 relative'>
+      {/* Folder Row */}
+      <div
+        className='flex items-center gap-1.5 py-1 px-2 rounded hover:bg-slate-100 cursor-pointer transition-colors'
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        {/* Indent Guide */}
+        {level > 0 && (
+          <div
+            className='absolute left-0 border-l-2 border-dashed border-slate-300 h-full'
+            style={{ left: '-8px' }}
+          ></div>
+        )}
+
+        <div
+          className={`transition-transform duration-200 text-slate-400 ${
+            isExpanded ? 'rotate-90' : ''
+          }`}
+        >
+          {hasChildren || hasFiles ? (
+            <ChevronRight className='w-3.5 h-3.5' />
+          ) : (
+            <span className='w-3.5 h-3.5 block' />
+          )}
+        </div>
+
+        <Folder className='w-4 h-4 text-amber-400 fill-amber-100 shrink-0' />
+
+        <span className='text-sm font-semibold truncate flex-1'>
+          {node.name}
+        </span>
+
+        {/* Count Badge */}
+        <span className='text-[10px] font-bold text-slate-400'>
+          ({node.files.length + Object.keys(node.children).length})
+        </span>
+      </div>
+
+      {/* Children Container */}
+      {isExpanded && (
+        <div className='relative pl-4 ml-2 border-l border-dashed border-slate-300'>
+          {Object.values(node.children).map((childNode) => (
+            <RecursiveTreeItem
+              key={childNode.id}
+              node={childNode}
+              level={level + 1}
+              onRemoveFile={onRemoveFile}
+              defaultExpanded={true} // Ensure children also default to open
+            />
+          ))}
+
+          {node.files.map((file) => (
+            <TreeFileRow
+              key={file.id}
+              file={file}
+              level={level + 1}
+              onRemoveFile={onRemoveFile}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Helper for File Rows
+const TreeFileRow = ({ file, onRemoveFile }) => (
+  <div className='group/file flex items-center justify-between py-1 px-2 rounded hover:bg-white hover:shadow-sm transition-all ml-1'>
+    <div className='flex items-center gap-2 overflow-hidden'>
+      {/* Checkmark Box */}
+      <div className='w-3.5 h-3.5 bg-blue-600 rounded-[3px] flex items-center justify-center shrink-0'>
+        <Check className='w-2.5 h-2.5 text-white stroke-[3]' />
+      </div>
+
+      <FileText className='w-3.5 h-3.5 text-slate-400 shrink-0' />
+      <span className='text-xs text-slate-600 truncate' title={file.name}>
+        {file.name}
+      </span>
+    </div>
+
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onRemoveFile(file);
+      }}
+      className='text-slate-300 hover:text-red-500 opacity-0 group-hover/file:opacity-100 transition-opacity'
+    >
+      <X className='w-3 h-3' />
+    </button>
+  </div>
+);
+
 function GoogleDriveViewer() {
   const [token, setToken] = useState(null);
   const [files, setFiles] = useState([]);
@@ -59,27 +188,15 @@ function GoogleDriveViewer() {
   const [checkedFiles, setCheckedFiles] = useState(new Map());
   const [folderSelectionStatus, setFolderSelectionStatus] = useState(new Map());
 
-  const MAX_FILES = 5;
-
-  // Processing State
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processedFiles, setProcessedFiles] = useState([]);
-  const [processingProgress, setProcessingProgress] = useState(0);
-
   // UI State
   const [loadingFolders, setLoadingFolders] = useState(new Set());
   const [toast, setToast] = useState(null);
 
-  useEffect(() => {
-    const originalError = console.error;
-    console.error = (...args) => {
-      if (args[0]?.includes?.('Cross-Origin-Opener-Policy')) return;
-      originalError.apply(console, args);
-    };
-    return () => {
-      console.error = originalError;
-    };
-  }, []);
+  // Processing State
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processedFiles, setProcessedFiles] = useState([]);
+
+  const MAX_FILES = 50;
 
   const showToast = (message, type = 'info') => setToast({ message, type });
 
@@ -93,8 +210,6 @@ function GoogleDriveViewer() {
     scope: 'https://www.googleapis.com/auth/drive.readonly',
     flow: 'implicit',
   });
-
-  // --- API Actions ---
 
   const listFiles = async (accessToken = token, folderId = currentFolderId) => {
     if (!accessToken) return;
@@ -140,40 +255,8 @@ function GoogleDriveViewer() {
     }
   };
 
-  // --- REAL DOWNLOAD LOGIC ---
-  const downloadFileFromDrive = async (file) => {
-    let url = `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`;
-    let filename = file.name;
+  // --- SELECTION LOGIC ---
 
-    // Handle Google Docs Conversion
-    if (file.mimeType.startsWith('application/vnd.google-apps.')) {
-      if (file.mimeType.includes('document')) {
-        url = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/pdf`;
-        filename += '.pdf';
-      } else if (file.mimeType.includes('spreadsheet')) {
-        url = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`;
-        filename += '.xlsx';
-      } else if (file.mimeType.includes('presentation')) {
-        url = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/vnd.openxmlformats-officedocument.presentationml.presentation`;
-        filename += '.pptx';
-      } else {
-        // Fallback or skip
-        throw new Error('Unsupported Google Doc type');
-      }
-    }
-
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!response.ok) throw new Error('Download failed');
-
-    const blob = await response.blob();
-    // Create a real JS File object
-    return new File([blob], filename, { type: blob.type });
-  };
-
-  // --- Selection Logic ---
   const handleFileCheck = (file) => {
     setCheckedFiles((prev) => {
       const newChecked = new Map(prev);
@@ -181,10 +264,13 @@ function GoogleDriveViewer() {
         newChecked.delete(file.id);
       } else {
         if (newChecked.size >= MAX_FILES) {
-          showToast(`Limit reached. Max ${MAX_FILES} files.`, 'error');
+          showToast(`Limit reached. Max ${MAX_FILES} items.`, 'error');
           return prev;
         }
-        newChecked.set(file.id, { ...file, parentFolderId: currentFolderId });
+        newChecked.set(file.id, {
+          ...file,
+          pathPath: [...folderStack],
+        });
       }
       return newChecked;
     });
@@ -193,6 +279,7 @@ function GoogleDriveViewer() {
   const handleFolderCheck = async (folder) => {
     const isAlreadySelected = folderSelectionStatus.has(folder.id);
 
+    // UNCHECK FOLDER
     if (isAlreadySelected) {
       setFolderSelectionStatus((prev) => {
         const next = new Map(prev);
@@ -202,26 +289,29 @@ function GoogleDriveViewer() {
       setCheckedFiles((prev) => {
         const next = new Map(prev);
         for (const [id, file] of next.entries()) {
-          if (file.parentFolderId === folder.id) next.delete(id);
+          if (
+            file.pathPath &&
+            file.pathPath[file.pathPath.length - 1].id === folder.id
+          ) {
+            next.delete(id);
+          }
         }
         return next;
       });
       return;
     }
 
+    // CHECK FOLDER
     setLoadingFolders((prev) => new Set(prev).add(folder.id));
-
     try {
       const contents = await fetchFolderContents(folder.id);
-      const validFiles = contents.filter(
-        (f) =>
-          !f.mimeType.startsWith('application/vnd.google-apps.') &&
-          f.mimeType !== 'application/vnd.google-apps.folder'
-      );
 
-      if (validFiles.length === 0) {
+      const validItems = contents;
+
+      if (validItems.length === 0) {
         showToast('Folder is empty', 'info');
-        return;
+        // Still add it so it shows up in tree (as empty)
+        // return;
       }
 
       setCheckedFiles((prev) => {
@@ -233,25 +323,29 @@ function GoogleDriveViewer() {
 
         const newMap = new Map(prev);
         let addedCount = 0;
+        const newPath = [...folderStack, { id: folder.id, name: folder.name }];
 
-        for (const file of validFiles) {
+        for (const item of validItems) {
           if (addedCount >= slotsLeft) break;
-          if (!newMap.has(file.id)) {
-            newMap.set(file.id, { ...file, parentFolderId: folder.id });
+          if (!newMap.has(item.id)) {
+            newMap.set(item.id, {
+              ...item,
+              pathPath: newPath,
+            });
             addedCount++;
           }
         }
 
-        const isPartial = addedCount < validFiles.length;
+        const isPartial = addedCount < validItems.length;
+
         setFolderSelectionStatus((statusMap) => {
           const next = new Map(statusMap);
-          next.set(folder.id, isPartial ? 'partial' : 'all');
+          next.set(folder.id, {
+            status: isPartial ? 'partial' : 'all',
+            name: folder.name,
+          });
           return next;
         });
-
-        isPartial
-          ? showToast(`Added ${addedCount} files. Limit reached.`, 'warning')
-          : showToast(`Selected ${addedCount} files.`, 'success');
 
         return newMap;
       });
@@ -266,70 +360,25 @@ function GoogleDriveViewer() {
     }
   };
 
-  // --- Processing Logic ---
-  const processSelection = async () => {
+  const processSelection = () => {
     setIsProcessing(true);
-    setProcessingProgress(0);
-    setShowFilePicker(false);
-
-    const total = checkedFiles.size;
-    let current = 0;
-    const results = [];
-
-    for (const fileMetadata of checkedFiles.values()) {
-      try {
-        // ACTUAL API CALL to get file content
-        const fileObject = await downloadFileFromDrive(fileMetadata);
-
-        results.push({
-          id: fileMetadata.id,
-          name: fileObject.name, // Use name from conversion if changed (e.g. .pdf)
-          mimeType: fileMetadata.mimeType,
-          size: fileObject.size,
-          fileObject: fileObject, // Store the blob/file
-          status: 'success',
-        });
-      } catch (error) {
-        console.error(error);
-        showToast(`Failed to download ${fileMetadata.name}`, 'error');
-      }
-
-      current++;
-      setProcessingProgress(Math.round((current / total) * 100));
-    }
-
-    setProcessedFiles((prev) => [...prev, ...results]);
-    setIsProcessing(false);
-    setCheckedFiles(new Map());
-    setFolderSelectionStatus(new Map());
-    showToast('Files attached & downloaded successfully', 'success');
-  };
-
-  // --- Client Side Download Handler ---
-  const handleDownloadFile = (fileItem) => {
-    if (!fileItem.fileObject) {
-      showToast('File content missing', 'error');
-      return;
-    }
-
-    // Create a temporary URL for the file blob
-    const url = URL.createObjectURL(fileItem.fileObject);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = fileItem.name;
-    document.body.appendChild(link);
-    link.click();
-
-    // Cleanup
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    setTimeout(() => {
+      const results = Array.from(checkedFiles.values()).filter(
+        (f) => !f.mimeType.includes('folder')
+      );
+      setProcessedFiles((prev) => [...prev, ...results]);
+      setIsProcessing(false);
+      setCheckedFiles(new Map());
+      setFolderSelectionStatus(new Map());
+      setShowFilePicker(false);
+      showToast('Attached successfully', 'success');
+    }, 1500);
   };
 
   const removeAttachedFile = (fileId) => {
     setProcessedFiles((prev) => prev.filter((f) => f.id !== fileId));
   };
 
-  // --- Helper for Icons & Nav ---
   const openFolder = (id, name) => {
     setCurrentFolderId(id);
     setFolderStack([...folderStack, { id, name }]);
@@ -357,13 +406,55 @@ function GoogleDriveViewer() {
 
   const getIcon = (mime) => {
     if (mime.includes('folder'))
-      return <Folder className='w-5 h-5 text-blue-500 fill-blue-50' />;
+      return <Folder className='w-5 h-5 text-blue-600 fill-blue-50' />;
     if (mime.includes('image'))
       return <ImageIcon className='w-5 h-5 text-purple-600' />;
     if (mime.includes('pdf'))
       return <FileText className='w-5 h-5 text-red-500' />;
     return <FileText className='w-5 h-5 text-slate-500' />;
   };
+
+  // --- TREE BUILDER LOGIC ---
+  const selectionTree = useMemo(() => {
+    const root = { id: 'root-virtual', name: 'Root', children: {}, files: [] };
+
+    checkedFiles.forEach((file) => {
+      let currentNode = root;
+      const path = file.pathPath || [];
+
+      // 1. Traverse Path
+      path.forEach((folder) => {
+        if (folder.id === 'root') return;
+        if (!currentNode.children[folder.id]) {
+          currentNode.children[folder.id] = {
+            id: folder.id,
+            name: folder.name,
+            children: {},
+            files: [],
+          };
+        }
+        currentNode = currentNode.children[folder.id];
+      });
+
+      // 2. Place the Item (Folder or File)
+      const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
+
+      if (isFolder) {
+        if (!currentNode.children[file.id]) {
+          currentNode.children[file.id] = {
+            id: file.id,
+            name: file.name,
+            children: {},
+            files: [],
+          };
+        }
+      } else {
+        currentNode.files.push(file);
+      }
+    });
+
+    return root;
+  }, [checkedFiles]);
 
   return (
     <div className='min-h-screen bg-white flex items-center justify-center p-6 font-sans text-slate-900'>
@@ -372,278 +463,255 @@ function GoogleDriveViewer() {
       <div className='w-full max-w-2xl'>
         <h1 className='text-2xl font-bold mb-6 text-slate-800'>New Message</h1>
 
-        <div className='bg-white border border-slate-300 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500 transition-all overflow-hidden flex flex-col'>
-          {/* Attached Files Chips */}
+        <div className='bg-white border border-slate-300 rounded-xl shadow-sm overflow-hidden flex flex-col'>
           {processedFiles.length > 0 && (
             <div className='px-3 pt-3 flex flex-wrap gap-2'>
               {processedFiles.map((file) => (
                 <div
                   key={file.id}
-                  className='flex items-center gap-2 bg-slate-100 border border-slate-200 text-slate-700 text-sm py-1.5 pl-2 pr-1.5 rounded-md animate-in fade-in zoom-in-95 group/chip'
+                  className='bg-slate-100 flex items-center gap-2 px-2 py-1 rounded text-xs text-slate-700'
                 >
-                  {getIcon(file.mimeType)}
-
-                  <span
-                    className='max-w-[150px] truncate font-medium'
-                    title={file.name}
+                  <FileText className='w-3 h-3 text-slate-400' />
+                  <span>{file.name}</span>
+                  <button
+                    onClick={() => removeAttachedFile(file.id)}
+                    className='text-slate-400 hover:text-red-500'
                   >
-                    {file.name}
-                  </span>
-                  <span className='text-xs text-slate-400'>
-                    ({formatSize(file.size)})
-                  </span>
-
-                  <div className='flex items-center gap-0.5 border-l border-slate-300 pl-1.5 ml-1'>
-                    {/* Download Button */}
-                    <button
-                      onClick={() => handleDownloadFile(file)}
-                      className='p-1 hover:bg-slate-200 rounded text-slate-500 hover:text-blue-600 transition-colors'
-                      title='Download file'
-                    >
-                      <Download className='w-3.5 h-3.5' />
-                    </button>
-
-                    {/* Remove Button */}
-                    <button
-                      onClick={() => removeAttachedFile(file.id)}
-                      className='p-1 hover:bg-slate-200 rounded text-slate-500 hover:text-red-500 transition-colors'
-                      title='Remove attachment'
-                    >
-                      <X className='w-3.5 h-3.5' />
-                    </button>
-                  </div>
+                    <X className='w-3 h-3' />
+                  </button>
                 </div>
               ))}
             </div>
           )}
-
           <textarea
             value={messageText}
             onChange={(e) => setMessageText(e.target.value)}
             placeholder='Type a message...'
-            className='w-full p-4 min-h-[120px] outline-none resize-none text-slate-800 placeholder:text-slate-400'
+            className='w-full p-4 min-h-[100px] outline-none resize-none text-slate-800'
           />
-
-          <div className='px-3 py-2 bg-slate-50 border-t border-slate-100 flex justify-between items-center'>
+          <div className='px-3 py-2 bg-slate-50 border-t border-slate-100 flex justify-between'>
             <button
               onClick={() => (!token ? login() : setShowFilePicker(true))}
-              className='flex items-center gap-2 text-slate-600 hover:text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-lg transition-all font-medium text-sm group'
+              className='flex items-center gap-2 text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors'
             >
-              <div className='bg-slate-200 group-hover:bg-blue-200 p-1.5 rounded-md transition-colors'>
-                <Paperclip className='w-4 h-4' />
-              </div>
-              <span>Attach from Drive</span>
+              <Paperclip className='w-4 h-4' /> Attach from Drive
             </button>
-
-            <button className='bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 font-medium text-sm transition-all shadow-sm'>
-              <span>Send</span>
-              <Send className='w-3.5 h-3.5' />
+            <button className='bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium'>
+              Send
             </button>
           </div>
         </div>
-
-        <p className='text-xs text-slate-400 mt-2 text-right'>
-          Supports Google Drive Attachments (Auto-converts Docs)
-        </p>
       </div>
 
-      {/* --- File Picker Modal (Same as before) --- */}
+      {/* --- FILE PICKER MODAL --- */}
       {showFilePicker && (
         <div className='fixed inset-0 z-50 flex items-center justify-center p-4'>
           <div
-            className='absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity'
+            className='absolute inset-0 bg-black/40 backdrop-blur-sm'
             onClick={() => setShowFilePicker(false)}
           />
 
-          <div className='relative bg-white w-full max-w-4xl h-[80vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200'>
+          <div className='relative bg-white w-full max-w-6xl h-[85vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-200'>
             {/* Header */}
-            <div className='px-6 py-4 border-b flex justify-between items-center bg-white z-10'>
+            <div className='px-6 py-4 border-b flex justify-between items-center bg-white z-10 shrink-0'>
               <div>
-                <h2 className='text-lg font-bold text-slate-800'>
-                  Select files to attach
+                <h2 className='text-xl font-bold text-slate-800'>
+                  Select Files
                 </h2>
-                <div className='text-xs text-slate-500 mt-0.5'>
+                <div className='text-sm text-slate-500 mt-0.5'>
                   <span
                     className={`${
-                      checkedFiles.size === MAX_FILES
+                      checkedFiles.size >= MAX_FILES
                         ? 'text-red-500 font-bold'
                         : 'text-blue-600 font-medium'
                     }`}
                   >
                     {checkedFiles.size} / {MAX_FILES}
                   </span>{' '}
-                  files selected
+                  items selected
                 </div>
               </div>
               <div className='flex gap-3'>
                 <button
                   onClick={() => setShowFilePicker(false)}
-                  className='px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm font-medium transition'
+                  className='px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm font-medium'
                 >
                   Cancel
                 </button>
                 <button
                   onClick={processSelection}
                   disabled={checkedFiles.size === 0}
-                  className='px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-sm font-medium transition shadow-md shadow-blue-500/20 disabled:shadow-none'
+                  className='px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-sm font-medium shadow-sm transition-all'
                 >
-                  Attach & Download
+                  Attach Selected
                 </button>
               </div>
             </div>
 
-            {/* Breadcrumbs */}
-            <div className='px-6 py-2 bg-slate-50 border-b flex items-center gap-2 overflow-x-auto no-scrollbar'>
-              {folderStack.length > 1 && (
-                <button
-                  onClick={goBackOneStep}
-                  className='p-1.5 hover:bg-slate-200 rounded-md mr-1 text-slate-500'
-                  title='Go Back'
-                >
-                  <ArrowLeft className='w-4 h-4' />
-                </button>
-              )}
-              {folderStack.map((f, i) => (
-                <div
-                  key={f.id}
-                  className='flex items-center text-sm whitespace-nowrap'
-                >
-                  {i > 0 && (
-                    <ChevronRight className='w-4 h-4 text-slate-300 mx-1' />
+            {/* SPLIT VIEW */}
+            <div className='flex flex-1 overflow-hidden'>
+              {/* LEFT: FILE BROWSER */}
+              <div className='flex-1 flex flex-col min-w-0 border-r border-slate-200'>
+                {/* Breadcrumbs */}
+                <div className='px-6 py-3 bg-slate-50 border-b flex items-center gap-2 overflow-x-auto no-scrollbar shrink-0'>
+                  {folderStack.length > 1 && (
+                    <button
+                      onClick={goBackOneStep}
+                      className='p-1.5 hover:bg-slate-200 rounded-md mr-1 text-slate-500'
+                    >
+                      <ArrowLeft className='w-4 h-4' />
+                    </button>
                   )}
-                  <span
-                    onClick={() => handleBreadcrumbClick(i)}
-                    className={`cursor-pointer transition-colors px-1.5 py-0.5 rounded ${
-                      i === folderStack.length - 1
-                        ? 'font-semibold text-slate-900 bg-white shadow-sm border border-slate-200'
-                        : 'text-slate-500 hover:text-blue-600 hover:bg-blue-50'
-                    }`}
-                  >
-                    {f.name}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            {/* File List */}
-            <div className='flex-1 overflow-y-auto p-4 bg-slate-50/30'>
-              {isLoading ? (
-                <div className='flex flex-col items-center justify-center h-full text-slate-400'>
-                  <Loader2 className='w-8 h-8 animate-spin mb-2 text-blue-500' />
-                  Loading...
-                </div>
-              ) : (
-                <div className='space-y-1.5'>
-                  {files.map((file) => {
-                    const isDir =
-                      file.mimeType === 'application/vnd.google-apps.folder';
-                    const isFileSelected = checkedFiles.has(file.id);
-                    const folderStatus = folderSelectionStatus.get(file.id);
-                    const isFolderSelected = !!folderStatus;
-                    const isAnySelected = isDir
-                      ? isFolderSelected
-                      : isFileSelected;
-                    const isLoadingFolder = loadingFolders.has(file.id);
-                    const canSelect =
-                      isDir ||
-                      !file.mimeType.startsWith('application/vnd.google-apps.');
-
-                    return (
-                      <div
-                        key={file.id}
-                        className={`group flex items-center px-4 py-3 bg-white rounded-lg border transition-all ${
-                          isAnySelected
-                            ? 'border-blue-500 bg-blue-50/20 z-10 relative'
-                            : 'border-slate-200 hover:border-blue-300 hover:shadow-sm'
+                  {folderStack.map((f, i) => (
+                    <div
+                      key={f.id}
+                      className='flex items-center text-sm whitespace-nowrap'
+                    >
+                      {i > 0 && (
+                        <ChevronRight className='w-4 h-4 text-slate-300 mx-1' />
+                      )}
+                      <span
+                        onClick={() => handleBreadcrumbClick(i)}
+                        className={`cursor-pointer px-2 py-1 rounded ${
+                          i === folderStack.length - 1
+                            ? 'font-semibold bg-white border border-slate-200 shadow-sm'
+                            : 'text-slate-500 hover:text-blue-600'
                         }`}
                       >
-                        <div
-                          className='mr-4 flex-shrink-0'
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (canSelect) {
-                              if (isDir) handleFolderCheck(file);
-                              else handleFileCheck(file);
-                            }
-                          }}
-                        >
-                          {isLoadingFolder ? (
-                            <Loader2 className='w-5 h-5 text-blue-600 animate-spin' />
-                          ) : (
-                            <div
-                              className={`w-5 h-5 rounded border flex items-center justify-center cursor-pointer transition-all duration-200 ${
-                                isAnySelected
-                                  ? 'bg-blue-600 border-blue-600'
-                                  : 'border-slate-300 bg-white hover:border-blue-400'
-                              }`}
-                            >
-                              {isDir && folderStatus === 'partial' ? (
-                                <Minus className='w-3 h-3 text-white' />
-                              ) : (
-                                isAnySelected && (
-                                  <Check className='w-3.5 h-3.5 text-white stroke-[3]' />
-                                )
-                              )}
-                            </div>
-                          )}
-                        </div>
+                        {f.name}
+                      </span>
+                    </div>
+                  ))}
+                </div>
 
-                        <div
-                          className={`flex-1 flex items-center gap-3 overflow-hidden ${
-                            isDir ? 'cursor-pointer' : ''
-                          }`}
-                          onClick={() =>
-                            isDir && openFolder(file.id, file.name)
-                          }
-                        >
+                {/* File Grid */}
+                <div className='flex-1 overflow-y-auto p-4 bg-slate-50/30'>
+                  {isLoading ? (
+                    <div className='flex flex-col items-center justify-center h-full text-slate-400'>
+                      <Loader2 className='w-8 h-8 animate-spin mb-2 text-blue-500' />{' '}
+                      Loading...
+                    </div>
+                  ) : (
+                    <div className='space-y-2'>
+                      {files.map((file) => {
+                        const isDir =
+                          file.mimeType ===
+                          'application/vnd.google-apps.folder';
+                        const isFileSelected = checkedFiles.has(file.id);
+                        const folderStatus = folderSelectionStatus.get(file.id);
+                        const isAnySelected = isDir
+                          ? !!folderStatus
+                          : isFileSelected;
+                        const isLoadingFolder = loadingFolders.has(file.id);
+
+                        return (
                           <div
-                            className={`p-1.5 rounded-md ${
-                              isAnySelected ? 'bg-white/50' : 'bg-slate-100'
+                            key={file.id}
+                            className={`group flex items-center px-4 py-3 rounded-lg border transition-all duration-200 ${
+                              isAnySelected
+                                ? 'border-blue-500 bg-blue-50'
+                                : 'bg-white border-slate-200 hover:border-blue-300'
                             }`}
                           >
-                            {getIcon(file.mimeType)}
-                          </div>
-
-                          <div className='flex-1 min-w-0 flex flex-col justify-center'>
-                            <span
-                              className={`text-sm font-medium truncate ${
-                                isAnySelected
-                                  ? 'text-blue-900'
-                                  : 'text-slate-700'
-                              }`}
+                            <div
+                              className='mr-4 flex-shrink-0'
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                isDir
+                                  ? handleFolderCheck(file)
+                                  : handleFileCheck(file);
+                              }}
                             >
-                              {file.name}
-                            </span>
-                            <div className='flex items-center gap-2 text-xs text-slate-400'>
-                              <span>
-                                {isDir
-                                  ? folderStatus === 'partial'
-                                    ? 'Partial'
-                                    : 'Folder'
-                                  : formatSize(file.size)}
-                              </span>
-                              {!canSelect && !isDir && (
-                                <span className='text-red-500 bg-red-50 px-1.5 rounded text-[10px] font-medium border border-red-100'>
-                                  Not Supported
+                              {isLoadingFolder ? (
+                                <Loader2 className='w-5 h-5 text-blue-600 animate-spin' />
+                              ) : (
+                                <div
+                                  className={`w-5 h-5 rounded border flex items-center justify-center cursor-pointer transition-all ${
+                                    isAnySelected
+                                      ? 'bg-blue-600 border-blue-600'
+                                      : 'border-slate-300 bg-white hover:border-blue-400'
+                                  }`}
+                                >
+                                  {isDir &&
+                                  folderStatus?.status === 'partial' ? (
+                                    <Minus className='w-3 h-3 text-white' />
+                                  ) : (
+                                    isAnySelected && (
+                                      <Check className='w-3.5 h-3.5 text-white stroke-[3]' />
+                                    )
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <div
+                              className={`flex-1 flex items-center gap-3 overflow-hidden ${
+                                isDir ? 'cursor-pointer' : ''
+                              }`}
+                              onClick={() =>
+                                isDir && openFolder(file.id, file.name)
+                              }
+                            >
+                              <div
+                                className={`p-2 rounded-lg ${
+                                  isDir
+                                    ? 'bg-blue-100 text-blue-600'
+                                    : 'bg-slate-100'
+                                }`}
+                              >
+                                {getIcon(file.mimeType)}
+                              </div>
+                              <div className='flex-1 min-w-0'>
+                                <span
+                                  className={`text-sm font-medium truncate block ${
+                                    isAnySelected
+                                      ? 'text-blue-900'
+                                      : 'text-slate-700'
+                                  }`}
+                                >
+                                  {file.name}
                                 </span>
+                              </div>
+                              {isDir && (
+                                <ChevronRight className='w-5 h-5 text-slate-300 group-hover:text-blue-500' />
                               )}
                             </div>
                           </div>
-
-                          {isDir && (
-                            <ChevronRight className='w-4 h-4 text-slate-300 group-hover:text-blue-400 transition-colors' />
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </div>
 
-            <div className='px-6 py-2 bg-slate-50 border-t border-slate-100 text-xs text-slate-500 flex justify-between'>
-              <span>Supported: Images, PDF, Video, Audio</span>
-              <span>Max 5 attachments</span>
+              {/* RIGHT: UPDATED SELECTION TREE */}
+              <div className='w-80 bg-slate-50 flex flex-col border-l border-slate-200 shadow-inner'>
+                <div className='p-4 border-b border-slate-200 bg-slate-100/50'>
+                  <h3 className='text-xs font-bold text-slate-500 uppercase tracking-wide flex items-center gap-2'>
+                    <List className='w-4 h-4' /> Selected Items
+                  </h3>
+                </div>
+
+                <div className='flex-1 overflow-y-auto p-4'>
+                  {checkedFiles.size === 0 ? (
+                    <div className='h-full flex flex-col items-center justify-center text-slate-400 text-center opacity-60'>
+                      <Paperclip className='w-10 h-10 mb-2' />
+                      <p className='text-sm font-medium'>No files selected</p>
+                    </div>
+                  ) : (
+                    <RecursiveTreeItem
+                      node={selectionTree}
+                      onRemoveFile={(file) => {
+                        setCheckedFiles((prev) => {
+                          const next = new Map(prev);
+                          next.delete(file.id);
+                          return next;
+                        });
+                      }}
+                      defaultExpanded={true} // Force Expansion from Root
+                    />
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -654,29 +722,12 @@ function GoogleDriveViewer() {
         <div className='fixed inset-0 z-[60] bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center'>
           <div className='bg-white p-6 rounded-2xl shadow-2xl border border-slate-100 flex flex-col items-center w-64'>
             <Loader2 className='w-8 h-8 text-blue-600 animate-spin mb-3' />
-            <h3 className='font-semibold text-slate-800 mb-2'>
-              Downloading...
-            </h3>
-            <div className='w-full bg-slate-100 rounded-full h-1.5 overflow-hidden'>
-              <div
-                className='bg-blue-600 h-full transition-all duration-300'
-                style={{ width: `${processingProgress}%` }}
-              />
-            </div>
+            <h3 className='font-semibold text-slate-800 mb-2'>Processing...</h3>
           </div>
         </div>
       )}
     </div>
   );
 }
-
-// Helper for size
-const formatSize = (bytes) => {
-  if (!bytes) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-};
 
 export default GoogleDriveViewer;
