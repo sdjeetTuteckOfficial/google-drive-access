@@ -309,7 +309,6 @@ function GoogleDrivePicker() {
   }, []);
 
   // VISUAL STATE: NOW RECURSIVE (Fixes the issue)
-  // Returns true if ANY file in this entire tree branch is selected.
   const getIsFolderSelected = (folderId) => {
     const allFiles = getAllFilesRecursively(folderId, folderCache);
     if (allFiles.length === 0) return false;
@@ -351,16 +350,12 @@ function GoogleDrivePicker() {
       }
 
       // 4. CHECK: Is the folder currently "Selected"?
-      // Updated to match Visual State: Check if ANY file in the tree is selected.
       const isCurrentlySelected = allRecursiveFiles.some((f) =>
         selectedItems.has(f.id)
       );
 
       if (isCurrentlySelected) {
         // --- DESELECT ACTION (DEEP CLEAN) ---
-        // If it looks selected (has checkmark), clicking it clears everything inside.
-
-        // Merge immediate + recursive to be safe (though recursive usually includes immediate)
         const filesToRemove = [...allRecursiveFiles];
 
         setSelectedItems((prev) => {
@@ -370,10 +365,16 @@ function GoogleDrivePicker() {
         });
       } else {
         // --- SELECT ACTION (SHALLOW SELECT) ---
-        // If it looks empty, clicking it selects ONLY immediate files.
 
+        // 1. Check if empty
         if (immediateFiles.length === 0) {
           showToast('No files directly in this folder to select', 'warning');
+          return;
+        }
+
+        // 2. [NEW FIX] Check if we are ALREADY full before attempting to add
+        if (selectedItems.size >= MAX_ITEMS) {
+          showToast(`Max ${MAX_ITEMS} items allowed`, 'error');
           return;
         }
 
