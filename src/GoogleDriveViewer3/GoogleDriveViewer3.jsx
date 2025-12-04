@@ -41,7 +41,8 @@ const Toast = ({ message, type, onClose }) => {
   );
 };
 
-// --- Recursive Tree Component ---
+// --- FIXED TREE COMPONENTS (Clean UI) ---
+
 const RecursiveTreeItem = ({
   node,
   level = 0,
@@ -53,9 +54,10 @@ const RecursiveTreeItem = ({
   const hasChildren = Object.keys(node.children).length > 0;
   const hasFiles = node.files.length > 0;
 
+  // Virtual Root: Just render children directly without a folder row
   if (node.id === 'root-virtual') {
     return (
-      <div className='flex flex-col gap-1'>
+      <div className='flex flex-col'>
         {Object.values(node.children).map((childNode) => (
           <RecursiveTreeItem
             key={childNode.id}
@@ -66,55 +68,47 @@ const RecursiveTreeItem = ({
           />
         ))}
         {node.files.map((file) => (
-          <TreeFileRow
-            key={file.id}
-            file={file}
-            level={0}
-            onRemoveFile={onRemoveFile}
-          />
+          <TreeFileRow key={file.id} file={file} onRemoveFile={onRemoveFile} />
         ))}
       </div>
     );
   }
 
   return (
-    <div className='select-none text-slate-700 relative'>
+    <div className='select-none text-slate-700'>
+      {/* Folder Row */}
       <div
-        className='flex items-center gap-1.5 py-1 px-2 rounded hover:bg-slate-100 cursor-pointer transition-colors'
+        className='group flex items-center gap-2 py-1.5 px-2 rounded-lg hover:bg-slate-100 cursor-pointer transition-colors'
         onClick={() => setIsExpanded(!isExpanded)}
       >
-        {level > 0 && (
-          <div
-            className='absolute left-0 border-l-2 border-dashed border-slate-300 h-full'
-            style={{ left: '-8px' }}
-          ></div>
-        )}
-
         <div
           className={`transition-transform duration-200 text-slate-400 ${
             isExpanded ? 'rotate-90' : ''
           }`}
         >
           {hasChildren || hasFiles ? (
-            <ChevronRight className='w-3.5 h-3.5' />
+            <ChevronRight className='w-4 h-4' />
           ) : (
-            <span className='w-3.5 h-3.5 block' />
+            <span className='w-4 h-4 block' />
           )}
         </div>
 
         <Folder className='w-4 h-4 text-amber-400 fill-amber-100 shrink-0' />
 
-        <span className='text-sm font-semibold truncate flex-1'>
+        <span className='text-sm font-semibold truncate flex-1 text-slate-700 group-hover:text-slate-900'>
           {node.name}
         </span>
 
-        <span className='text-[10px] font-bold text-slate-400'>
-          {node.files.length > 0 ? `(${node.files.length} files)` : ''}
-        </span>
+        {node.files.length > 0 && (
+          <span className='text-[10px] font-medium text-slate-500 bg-slate-200/50 px-1.5 py-0.5 rounded-md'>
+            {node.files.length}
+          </span>
+        )}
       </div>
 
+      {/* Children Container - Fixed Indentation Line */}
       {isExpanded && (
-        <div className='relative pl-4 ml-2 border-l border-dashed border-slate-300'>
+        <div className='relative pl-4 ml-3.5 border-l border-slate-200 my-1'>
           {Object.values(node.children).map((childNode) => (
             <RecursiveTreeItem
               key={childNode.id}
@@ -129,7 +123,6 @@ const RecursiveTreeItem = ({
             <TreeFileRow
               key={file.id}
               file={file}
-              level={level + 1}
               onRemoveFile={onRemoveFile}
             />
           ))}
@@ -140,28 +133,37 @@ const RecursiveTreeItem = ({
 };
 
 const TreeFileRow = ({ file, onRemoveFile }) => (
-  <div className='group/file flex items-center justify-between py-1 px-2 rounded hover:bg-white hover:shadow-sm transition-all ml-1'>
-    <div className='flex items-center gap-2 overflow-hidden'>
-      <div className='w-3.5 h-3.5 bg-blue-600 rounded-[3px] flex items-center justify-center shrink-0'>
-        <Check className='w-2.5 h-2.5 text-white stroke-[3]' />
+  <div className='group/file flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-white hover:shadow-sm border border-transparent hover:border-slate-100 transition-all ml-1'>
+    <div className='flex items-center gap-2.5 overflow-hidden'>
+      {/* Selection Checkbox Visual */}
+      <div className='w-4 h-4 bg-blue-600 rounded-[4px] flex items-center justify-center shrink-0 shadow-sm'>
+        <Check className='w-3 h-3 text-white stroke-[3]' />
       </div>
-      <FileText className='w-3.5 h-3.5 text-slate-400 shrink-0' />
-      <span className='text-xs text-slate-600 truncate' title={file.name}>
+
+      {/* Filename */}
+      <span
+        className='text-xs text-slate-600 font-medium truncate group-hover/file:text-slate-900'
+        title={file.name}
+      >
         {file.name}
       </span>
     </div>
 
+    {/* Remove Button */}
     <button
       onClick={(e) => {
         e.stopPropagation();
         onRemoveFile(file);
       }}
-      className='text-slate-300 hover:text-red-500 opacity-0 group-hover/file:opacity-100 transition-opacity'
+      className='text-slate-300 hover:text-red-500 hover:bg-red-50 p-1 rounded-md opacity-0 group-hover/file:opacity-100 transition-all'
+      title='Remove file'
     >
-      <X className='w-3 h-3' />
+      <X className='w-3.5 h-3.5' />
     </button>
   </div>
 );
+
+// --- MAIN COMPONENT ---
 
 function GoogleDriveViewer() {
   const [token, setToken] = useState(null);
@@ -804,8 +806,6 @@ function GoogleDriveViewer() {
                           next.delete(file.id);
                           return next;
                         });
-                        // Also clear folder partial/full status if this was the last file
-                        // (Simplified: just letting user deselect files one by one is fine)
                       }}
                       defaultExpanded={true}
                     />
