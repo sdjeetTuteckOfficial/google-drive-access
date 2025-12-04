@@ -1,5 +1,6 @@
 import './App.css';
-import GoogleDriveViewer from './GoogleDriveViewer/GoogleDriveViewer';
+import GoogleDriveViewer from './GoogleDriveViewer2/GoogleDriveViewer2';
+// import GoogleDriveViewer from './GoogleDriveViewer/GoogleDriveViewer';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
