@@ -89,7 +89,7 @@ const TreeNode = ({
   isExpanded,
   onToggleExpand,
   onSelect,
-  isSelected, // Simply true or false now
+  isSelected,
   childrenFiles,
   isLoadingChildren,
   isSelectable = true,
@@ -173,7 +173,7 @@ const TreeNode = ({
           {item.name}
         </span>
 
-        {/* Checkbox - SIMPLIFIED: Just Check or Empty */}
+        {/* Checkbox */}
         {isSelectable && (
           <div
             onClick={handleCheckbox}
@@ -290,35 +290,20 @@ function GoogleDrivePicker() {
     }
   };
 
-  // --- RECURSIVE LOGIC ---
+  // --- SELECTION LOGIC (UPDATED: Non-Recursive) ---
 
-  // Recursively gets all FILE objects under a folder
-  // Accepts 'currentCache' to handle cases where state hasn't updated yet
-  const getAllFilesRecursively = useCallback((folderId, currentCache) => {
-    let files = [];
-    const children = currentCache[folderId] || [];
-
-    children.forEach((child) => {
-      if (child.mimeType.includes('folder')) {
-        files = [...files, ...getAllFilesRecursively(child.id, currentCache)];
-      } else {
-        files.push(child);
-      }
-    });
-
-    return files;
-  }, []);
-
-  // Simplified: If ANY file inside is selected, return TRUE.
+  // Checks if ANY immediate file in this folder is selected
   const getIsFolderSelected = (folderId) => {
-    const allFilesInTree = getAllFilesRecursively(folderId, folderCache);
-    if (allFilesInTree.length === 0) return false;
+    const children = folderCache[folderId] || [];
+    // Only look at direct files, ignore sub-folders
+    const immediateFiles = children.filter(
+      (c) => !c.mimeType.includes('folder')
+    );
 
-    // Returns true if ANY file in this folder is currently selected
-    return allFilesInTree.some((f) => selectedItems.has(f.id));
+    if (immediateFiles.length === 0) return false;
+    return immediateFiles.some((f) => selectedItems.has(f.id));
   };
 
-  // --- CORE SELECTION LOGIC ---
   const handleSelectItem = async (item) => {
     const isFolder = item.mimeType.includes('folder');
 
@@ -326,45 +311,46 @@ function GoogleDrivePicker() {
       // 1. Auto-expand visually
       setExpandedIds((prev) => new Set(prev).add(item.id));
 
-      // 2. Ensure Data is Loaded (Wait for it!)
+      // 2. Ensure Data is Loaded
       let currentCache = { ...folderCache };
       let children = currentCache[item.id];
 
       if (!children) {
         setLoadingIds((prev) => new Set(prev).add(item.id));
         try {
-          // Fetch and update our LOCAL variable for calculation
           const newFiles = await loadFolder(token, item.id);
           currentCache[item.id] = newFiles;
+          children = newFiles;
         } catch (e) {
           return;
         }
       }
 
-      // 3. Get ALL files recursively using the FRESH cache
-      const allDescendants = getAllFilesRecursively(item.id, currentCache);
+      // 3. Get ONLY Immediate Files (Fix for "Old States" bug)
+      // We explicitly ignore files inside sub-folders here.
+      const immediateFiles = children.filter(
+        (c) => !c.mimeType.includes('folder')
+      );
 
-      if (allDescendants.length === 0) {
-        showToast('Folder is empty', 'warning');
+      if (immediateFiles.length === 0) {
+        showToast('No files directly in this folder', 'warning');
         return;
       }
 
-      // 4. Determine Action:
-      // If ANY file is already selected -> Deselect All (Clear).
-      // If NOTHING is selected -> Select All (Fill).
-      const anySelected = allDescendants.some((f) => selectedItems.has(f.id));
+      // 4. Toggle Logic for Immediate Files
+      const anySelected = immediateFiles.some((f) => selectedItems.has(f.id));
 
       setSelectedItems((prev) => {
         const next = new Map(prev);
 
         if (anySelected) {
-          // DESELECT ACTION: Clear this folder
-          allDescendants.forEach((f) => next.delete(f.id));
+          // DESELECT ACTION: Uncheck all immediate files
+          immediateFiles.forEach((f) => next.delete(f.id));
         } else {
-          // SELECT ACTION: Fill up to limit
+          // SELECT ACTION: Check all immediate files (up to limit)
           let addedThisTurn = 0;
 
-          for (const file of allDescendants) {
+          for (const file of immediateFiles) {
             if (next.size >= MAX_ITEMS) break;
             if (!next.has(file.id)) {
               next.set(file.id, file);
@@ -374,7 +360,7 @@ function GoogleDrivePicker() {
 
           if (next.size >= MAX_ITEMS && addedThisTurn > 0) {
             if (
-              allDescendants.length > addedThisTurn &&
+              immediateFiles.length > addedThisTurn &&
               next.size === MAX_ITEMS
             ) {
               showToast(`Limit of ${MAX_ITEMS} reached`, 'warning');
@@ -472,7 +458,7 @@ function GoogleDrivePicker() {
     return {
       ...fileItem,
       isExpanded,
-      isSelected, // Clean boolean
+      isSelected,
       isLoading,
       children,
     };
@@ -601,7 +587,7 @@ function GoogleDrivePicker() {
                       isExpanded={expandedIds.has('root')}
                       onToggleExpand={handleToggleExpand}
                       onSelect={handleSelectItem}
-                      isSelected={getIsFolderSelected('root')} // Root check state
+                      isSelected={getIsFolderSelected('root')}
                       isLoadingChildren={loadingIds.has('root')}
                       childrenFiles={rootNodes}
                       isSelectable={false}
