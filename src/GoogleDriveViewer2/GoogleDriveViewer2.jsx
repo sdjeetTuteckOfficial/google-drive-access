@@ -290,20 +290,33 @@ function GoogleDrivePicker() {
     }
   };
 
-  // --- SELECTION LOGIC (UPDATED: Non-Recursive) ---
+  // --- HELPER LOGIC ---
 
-  // Checks if ANY immediate file in this folder is selected
+  // RECURSIVE HELPER (Used for Deep Clean & Visual State)
+  const getAllFilesRecursively = useCallback((folderId, currentCache) => {
+    let files = [];
+    const children = currentCache[folderId] || [];
+
+    children.forEach((child) => {
+      if (child.mimeType.includes('folder')) {
+        files = [...files, ...getAllFilesRecursively(child.id, currentCache)];
+      } else {
+        files.push(child);
+      }
+    });
+
+    return files;
+  }, []);
+
+  // VISUAL STATE: NOW RECURSIVE (Fixes the issue)
+  // Returns true if ANY file in this entire tree branch is selected.
   const getIsFolderSelected = (folderId) => {
-    const children = folderCache[folderId] || [];
-    // Only look at direct files, ignore sub-folders
-    const immediateFiles = children.filter(
-      (c) => !c.mimeType.includes('folder')
-    );
-
-    if (immediateFiles.length === 0) return false;
-    return immediateFiles.some((f) => selectedItems.has(f.id));
+    const allFiles = getAllFilesRecursively(folderId, folderCache);
+    if (allFiles.length === 0) return false;
+    return allFiles.some((f) => selectedItems.has(f.id));
   };
 
+  // --- SELECTION HANDLER ---
   const handleSelectItem = async (item) => {
     const isFolder = item.mimeType.includes('folder');
 
@@ -326,28 +339,46 @@ function GoogleDrivePicker() {
         }
       }
 
-      // 3. Get ONLY Immediate Files (Fix for "Old States" bug)
-      // We explicitly ignore files inside sub-folders here.
+      // 3. Get BOTH Immediate and Recursive files
       const immediateFiles = children.filter(
         (c) => !c.mimeType.includes('folder')
       );
+      const allRecursiveFiles = getAllFilesRecursively(item.id, currentCache);
 
-      if (immediateFiles.length === 0) {
-        showToast('No files directly in this folder', 'warning');
+      if (immediateFiles.length === 0 && allRecursiveFiles.length === 0) {
+        showToast('Folder is empty', 'warning');
         return;
       }
 
-      // 4. Toggle Logic for Immediate Files
-      const anySelected = immediateFiles.some((f) => selectedItems.has(f.id));
+      // 4. CHECK: Is the folder currently "Selected"?
+      // Updated to match Visual State: Check if ANY file in the tree is selected.
+      const isCurrentlySelected = allRecursiveFiles.some((f) =>
+        selectedItems.has(f.id)
+      );
 
-      setSelectedItems((prev) => {
-        const next = new Map(prev);
+      if (isCurrentlySelected) {
+        // --- DESELECT ACTION (DEEP CLEAN) ---
+        // If it looks selected (has checkmark), clicking it clears everything inside.
 
-        if (anySelected) {
-          // DESELECT ACTION: Uncheck all immediate files
-          immediateFiles.forEach((f) => next.delete(f.id));
-        } else {
-          // SELECT ACTION: Check all immediate files (up to limit)
+        // Merge immediate + recursive to be safe (though recursive usually includes immediate)
+        const filesToRemove = [...allRecursiveFiles];
+
+        setSelectedItems((prev) => {
+          const next = new Map(prev);
+          filesToRemove.forEach((f) => next.delete(f.id));
+          return next;
+        });
+      } else {
+        // --- SELECT ACTION (SHALLOW SELECT) ---
+        // If it looks empty, clicking it selects ONLY immediate files.
+
+        if (immediateFiles.length === 0) {
+          showToast('No files directly in this folder to select', 'warning');
+          return;
+        }
+
+        setSelectedItems((prev) => {
+          const next = new Map(prev);
           let addedThisTurn = 0;
 
           for (const file of immediateFiles) {
@@ -366,9 +397,9 @@ function GoogleDrivePicker() {
               showToast(`Limit of ${MAX_ITEMS} reached`, 'warning');
             }
           }
-        }
-        return next;
-      });
+          return next;
+        });
+      }
     } else {
       // SINGLE FILE TOGGLE
       setSelectedItems((prev) => {
